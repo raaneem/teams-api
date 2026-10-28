@@ -451,6 +451,7 @@ teams-api-mcp --print-http-token   # the token your MCP client needs
 - HTTP mode is read-only unless you pass `--allow-writes`. `TEAMS_READ_ONLY=true` always wins.
 - Requests that carry an `Origin` header (browsers) are refused.
 - It keeps the cached sign-in fresh: about 45 minutes before the sign-in expires (`--refresh-margin` changes that), it loads Teams in the saved browser profile for a few seconds and saves the new tokens. If Teams hands back the same sign-in, it tries again right after expiry; if Microsoft needs you to sign in again, it retries every 2 hours. `--no-auto-refresh` turns this off. The short-lived search token is still refreshed on demand.
+- Files from `teams_download_file` also get a link, valid for 1 hour, under `/files/` on the address clients use to reach the server (default `http://host.docker.internal:8787`; set it with `--public-url`). Clients that cannot show images from tool results, such as Rakazo, can open the link in their own browser or computer to see the file. A link needs no token but works for that one file only, and appears only in tool results.
 - It listens on `127.0.0.1` by default (`--host` and `--port` change that). Docker Desktop and OrbStack containers reach it at `http://host.docker.internal:8787/mcp`. Binding another address exposes Teams to that network; only do so behind a firewall you control.
 
 In your MCP client, add a **Streamable HTTP** server with that URL and the header `Authorization: Bearer <token>`.

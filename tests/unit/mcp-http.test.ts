@@ -5,7 +5,13 @@
  * client provider: no authentication and no Teams requests.
  */
 
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
+  FileShare,
   loadOrCreateHttpToken,
   startMcpHttpServer,
 } from "../../src/mcp-http.js";
@@ -38,24 +45,34 @@ const fakeClient = {
 
 let server: Server;
 let baseUrl: string;
+let fileShare: FileShare;
+let fileDirectory: string;
+let clock: number;
 
 beforeEach(async () => {
   vi.stubEnv("TEAMS_READ_ONLY", "");
   vi.stubEnv("TEAMS_TELEMETRY", "");
+  fileDirectory = mkdtempSync(join(tmpdir(), "teams-api-http-files-"));
+  clock = Date.parse("2026-10-29T12:00:00Z");
   const authManager = { getClient: vi.fn().mockResolvedValue(fakeClient) };
   server = await startMcpHttpServer({
     host: "127.0.0.1",
     port: 0,
     token,
     createMcpServer: () =>
-      createMcpServer({ authManager, readOnly: true }).server,
+      createMcpServer({ authManager, readOnly: true, fileShare }).server,
+    get fileShare() {
+      return fileShare;
+    },
   });
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}`;
+  fileShare = new FileShare(baseUrl, 60 * 60 * 1_000, () => clock);
 });
 
 afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  rmSync(fileDirectory, { recursive: true, force: true });
   vi.unstubAllEnvs();
 });
 
@@ -138,6 +155,111 @@ describe("MCP over HTTP", () => {
   });
 });
 
+describe("file links", () => {
+  function shareFile(fileName: string, contentType: string, body: string) {
+    const path = join(fileDirectory, fileName);
+    writeFileSync(path, body);
+    return fileShare.share({ path, fileName, contentType });
+  }
+
+  it("serves a shared file without the MCP token", async () => {
+    const link = shareFile("screenshot.png", "image/png", "PNGDATA");
+
+    const response = await fetch(link);
+
+    expect(link).toMatch(/\/files\/[A-Za-z0-9_-]{22}\/screenshot\.png$/);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toContain("inline");
+    expect(await response.text()).toBe("PNGDATA");
+  });
+
+  it("forgets links after an hour, and never serves unknown ones", async () => {
+    const link = shareFile("screenshot.png", "image/png", "PNGDATA");
+    clock += 60 * 60 * 1_000;
+
+    expect((await fetch(link)).status).toBe(404);
+    expect((await fetch(`${baseUrl}/files/not-a-real-link/x.png`)).status).toBe(
+      404,
+    );
+  });
+
+  it("only allows GET and HEAD", async () => {
+    const link = shareFile("screenshot.png", "image/png", "PNGDATA");
+
+    expect((await fetch(link, { method: "POST" })).status).toBe(405);
+    expect((await fetch(link, { method: "HEAD" })).status).toBe(200);
+  });
+
+  it("sends types a browser could run as downloads", async () => {
+    const link = shareFile("page.html", "text/html", "<script>1</script>");
+
+    const response = await fetch(link);
+
+    expect(response.headers.get("content-type")).toBe(
+      "application/octet-stream",
+    );
+    expect(response.headers.get("content-disposition")).toContain("attachment");
+    expect(response.headers.get("content-security-policy")).toBe("sandbox");
+  });
+
+  it("adds a link to teams_download_file results", async () => {
+    fakeClient.getMessages = vi.fn().mockResolvedValue([
+      {
+        id: "1761642900000",
+        messageType: "RichText/Html",
+        senderMri: "8:orgid:aaaaaaaa-0000-0000-0000-000000000001",
+        senderDisplayName: "Alice Smith",
+        content: "<p>see screenshot</p>",
+        originalArrivalTime: "2026-10-28T09:15:00.000Z",
+        composeTime: "2026-10-28T09:15:00.000Z",
+        editTime: null,
+        subject: null,
+        isDeleted: false,
+        reactions: [],
+        followers: [],
+        mentions: [],
+        quotedMessageId: null,
+        images: [
+          {
+            amsObjectId: "0-test-image",
+            url: "https://example.test/imgo",
+            fullSizeUrl: "https://example.test/full",
+            width: 100,
+            height: 50,
+            contentPosition: 0,
+          },
+        ],
+        files: [],
+      },
+    ]);
+    fakeClient.downloadImage = vi.fn().mockResolvedValue({
+      data: Buffer.from("PNGDATA"),
+      contentType: "image/png",
+      size: 7,
+    });
+    const client = await connectClient(token);
+
+    const result = await client.callTool({
+      name: "teams_download_file",
+      arguments: {
+        conversationId: "19:dev@thread.v2",
+        messageId: "1761642900000",
+        outputDirectory: fileDirectory,
+      },
+    });
+    await client.close();
+
+    const text = (result.content as Array<{ type: string; text?: string }>)
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    const link = /Link \(valid for 1 hour\): (\S+)/.exec(text)?.[1];
+    expect(link).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/files\//);
+    expect(await (await fetch(link!)).text()).toBe("PNGDATA");
+  });
+});
+
 describe("loadOrCreateHttpToken", () => {
   let directory: string;
 
@@ -187,6 +309,7 @@ describe("parseServerArguments", () => {
       printHttpToken: false,
       autoRefresh: true,
       refreshMarginMs: 45 * 60 * 1_000,
+      publicUrl: "http://host.docker.internal:8787",
     });
   });
 
