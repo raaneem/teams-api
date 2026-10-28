@@ -114,6 +114,7 @@ async function resolveImageTarget(
 export const describeImageAction: ActionDefinition = {
   name: "describe-image",
   title: "Describe Image",
+  access: "external",
   description:
     "Describe an inline Teams image using a configured OpenAI-compatible vision model. " +
     "Use amsObjectId directly, or identify a message by chat/to/conversationId plus messageId. " +

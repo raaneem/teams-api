@@ -12,10 +12,12 @@ import type {
   MessageSearchPage,
 } from "../types.js";
 import type { ActionDefinition } from "./formatters.js";
+import { searchResultToJson } from "./json-output.js";
 
 export const searchMessagesAction: ActionDefinition = {
   name: "search-messages",
   title: "Search Messages",
+  access: "read",
   description:
     "Search message content across accessible Teams chats and channel posts/replies. " +
     "Read-only; does not open chats, send messages, or mark messages read. " +
@@ -120,11 +122,24 @@ export const searchMessagesAction: ActionDefinition = {
       lines.push(`More results available. **nextOffset:** ${page.nextOffset}`);
     return lines.join("\n");
   },
+  formatJson: (result) => {
+    const page = result as MessageSearchPage;
+    return {
+      data: page.messages.map(searchResultToJson),
+      meta: {
+        count: page.messages.length,
+        total: page.total,
+        hasMore: page.hasMore,
+        nextOffset: page.nextOffset ?? null,
+      },
+    };
+  },
 };
 
 export const getProfilesAction: ActionDefinition = {
   name: "get-profiles",
   title: "Get User Profiles",
+  access: "read",
   description:
     "Get Teams profiles for one or more people by MRI. " +
     "Returns display name, email, job title, office location, and user type.",
@@ -168,6 +183,7 @@ export const getProfilesAction: ActionDefinition = {
 export const findPeopleAction: ActionDefinition = {
   name: "find-people",
   title: "Find People",
+  access: "read",
   description:
     "Search for people in the organization directory by name. " +
     "Uses the Substrate search API (requires authentication via auto-login or interactive). " +
@@ -215,6 +231,7 @@ export const findPeopleAction: ActionDefinition = {
 export const findChatsAction: ActionDefinition = {
   name: "find-chats",
   title: "Find Chats",
+  access: "read",
   description:
     "Search for chats by name or member name. " +
     "Uses the Substrate search API (requires authentication via auto-login or interactive). " +

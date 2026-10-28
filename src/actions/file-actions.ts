@@ -27,6 +27,7 @@ export interface DownloadResult {
 export const downloadFileAction: ActionDefinition = {
   name: "download-file",
   title: "Download File",
+  access: "read",
   description:
     "Download file attachment(s) from a message. " +
     "Identify the conversation by topic name (--chat), " +

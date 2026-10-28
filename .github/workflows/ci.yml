@@ -34,7 +34,8 @@ jobs:
         run: npm run test:unit
 
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Forks cannot publish the teams-api package, so only release upstream.
+    if: github.repository == 'Maxim-Mazurok/teams-api' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: ci
     runs-on: ubuntu-latest
     permissions:

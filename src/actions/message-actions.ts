@@ -26,6 +26,13 @@ import {
   resolveConversationId,
 } from "./conversation-resolution.js";
 import { emitAuditEvent } from "../audit.js";
+import { parseSinceTimestamp } from "../since.js";
+import {
+  attachResultContext,
+  getResultContext,
+  messageToJson,
+  newestCreatedAt,
+} from "./json-output.js";
 import {
   resolveProtectedPatterns,
   matchProtectedConversation,
@@ -134,6 +141,7 @@ function formatAttachmentSummary(message: Message): string {
 export const getMessages: ActionDefinition = {
   name: "get-messages",
   title: "Get Messages",
+  access: "read",
   description:
     "Get messages from a conversation. " +
     "Identify the conversation by topic name (--chat), " +
@@ -163,9 +171,10 @@ export const getMessages: ActionDefinition = {
       name: "since",
       type: "string",
       description:
-        "ISO-8601 timestamp. Only return messages created strictly after this time. " +
-        "Useful for incremental syncing — pass the timestamp of the last fetched message " +
-        "to retrieve only newer messages.",
+        "Only return messages created strictly after this time. " +
+        "Accepts an ISO-8601 time with a timezone (2026-10-28T09:30:00Z), " +
+        "a date (2026-10-28, midnight UTC), or a duration before now (90m, 24h, 7d). " +
+        "For incremental syncing, pass the newest createdAt from the previous run.",
       required: false,
     },
     {
@@ -185,14 +194,23 @@ export const getMessages: ActionDefinition = {
       default: "oldest-first",
     },
   ],
+  validateParameters: (parameters) => {
+    if (parameters.since !== undefined) {
+      parseSinceTimestamp(String(parameters.since));
+    }
+  },
   execute: async (client, parameters) => {
-    let { conversationId } = await resolveConversationId(client, parameters);
+    const since =
+      parameters.since === undefined
+        ? undefined
+        : parseSinceTimestamp(String(parameters.since));
+    const resolved = await resolveConversationId(client, parameters);
+    let conversationId = resolved.conversationId;
     const messageId = parameters.messageId as string | undefined;
     if (messageId) {
       conversationId = `${conversationId};messageid=${messageId}`;
     }
     const limit = parameters.limit as number | undefined;
-    const since = parameters.since as string | undefined;
     const textOnly = (parameters.textOnly as boolean | undefined) ?? true;
     const onProgress = parameters.onProgress as
       | ((count: number) => void)
@@ -203,6 +221,7 @@ export const getMessages: ActionDefinition = {
       since,
       onProgress,
     });
+    const limitReached = limit !== undefined && messages.length >= limit;
 
     if (textOnly) {
       messages = messages.filter(
@@ -216,7 +235,14 @@ export const getMessages: ActionDefinition = {
       messages = [...messages].reverse();
     }
 
-    return messages;
+    return attachResultContext(messages, {
+      conversationId: resolved.conversationId,
+      conversationLabel: resolved.label,
+      threadRootId: messageId ?? null,
+      since: since ?? null,
+      order,
+      limitReached,
+    });
   },
   formatConcise: (result) => {
     const messages = result as Message[];
@@ -281,11 +307,31 @@ export const getMessages: ActionDefinition = {
     }
     return lines.join("\n");
   },
+  formatJson: (result) => {
+    const context = getResultContext(result);
+    const messages = (result as Message[]).map((message) =>
+      messageToJson(message, context),
+    );
+    return {
+      data: messages,
+      meta: {
+        conversationId: context.conversationId ?? null,
+        conversationLabel: context.conversationLabel ?? null,
+        threadRootId: context.threadRootId ?? null,
+        since: context.since ?? null,
+        order: context.order ?? null,
+        count: messages.length,
+        newestCreatedAt: newestCreatedAt(messages),
+        limitReached: context.limitReached ?? false,
+      },
+    };
+  },
 };
 
 export const sendMessage: ActionDefinition = {
   name: "send-message",
   title: "Send Message",
+  access: "write",
   description:
     "Send a message to a conversation. " +
     "Identify the conversation by topic name (--chat), " +
@@ -533,6 +579,7 @@ export const sendMessage: ActionDefinition = {
 export const editMessageAction: ActionDefinition = {
   name: "edit-message",
   title: "Edit Message",
+  access: "write",
   description:
     "Edit an existing message in a conversation. " +
     "Identify the conversation by topic name (--chat), " +
@@ -691,6 +738,7 @@ const DEFAULT_DELETE_TOMBSTONE = "~~This message was removed by an agent~~";
 export const deleteMessageAction: ActionDefinition = {
   name: "delete-message",
   title: "Delete Message",
+  access: "write",
   description:
     "Delete a message from a conversation. " +
     "Identify the conversation by topic name (--chat), " +
@@ -837,6 +885,7 @@ export const deleteMessageAction: ActionDefinition = {
 export const addReactionAction: ActionDefinition = {
   name: "add-reaction",
   title: "Add Reaction",
+  access: "write",
   description:
     "Add a reaction (emoji) to a message. " +
     "Identify the conversation by topic name (--chat), " +
@@ -895,6 +944,7 @@ export const addReactionAction: ActionDefinition = {
 export const removeReactionAction: ActionDefinition = {
   name: "remove-reaction",
   title: "Remove Reaction",
+  access: "write",
   description:
     "Remove a reaction (emoji) from a message. " +
     "Identify the conversation by topic name (--chat), " +

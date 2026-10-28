@@ -23,6 +23,21 @@ export interface ActionParameter {
   default?: string | number | boolean;
 }
 
+/**
+ * What an action may change.
+ *
+ * - `read`: only reads Teams. Allowed in read-only mode.
+ * - `write`: changes Teams (send, edit, delete, react). Refused in read-only mode.
+ * - `external`: sends Teams content to a third-party service. Refused in read-only mode.
+ */
+export type ActionAccess = "read" | "write" | "external";
+
+/** Stable JSON output for an action: `data` plus optional `meta`. */
+export interface JsonPayload {
+  data: unknown;
+  meta?: Record<string, unknown>;
+}
+
 export interface ActionDefinition {
   /** Kebab-case name. CLI command name; MCP tool name is `teams_` + snake_case. */
   name: string;
@@ -30,8 +45,15 @@ export interface ActionDefinition {
   title: string;
   /** Full description shared across CLI help, MCP, and documentation. */
   description: string;
+  /** What the action may change; read-only mode only allows `read`. */
+  access: ActionAccess;
   /** Typed parameter definitions. */
   parameters: ActionParameter[];
+  /**
+   * Reject invalid parameters before any sign-in or network request.
+   * Throws `InvalidArgumentError`.
+   */
+  validateParameters?: (parameters: Record<string, unknown>) => void;
   /** Execute the action against a TeamsClient. */
   execute: (
     client: import("../teams-client.js").TeamsClient,
@@ -39,12 +61,20 @@ export interface ActionDefinition {
   ) => Promise<unknown>;
   /** Format result as concise Markdown — human-readable, action-complete, with actionable IDs. */
   formatConcise: (result: unknown) => string;
+  /**
+   * Map the result to a stable JSON shape for `--format json`.
+   * Without it, the raw result becomes `data`.
+   */
+  formatJson?: (result: unknown) => JsonPayload;
 }
 
-export type OutputFormat = "concise" | "detailed";
+export type OutputFormat = "concise" | "detailed" | "json";
 export type MessageOrder = "newest-first" | "oldest-first";
 
 // ── Output format dispatch ───────────────────────────────────────────
+
+/** Version of the `--format json` envelope. Bump on incompatible changes. */
+export const JSON_SCHEMA_VERSION = 1;
 
 /** Format an action result in the specified output format. */
 export function formatOutput(
@@ -57,7 +87,41 @@ export function formatOutput(
       return JSON.stringify(result, null, 2);
     case "concise":
       return action.formatConcise(result);
+    case "json": {
+      const payload = action.formatJson
+        ? action.formatJson(result)
+        : { data: result };
+      return JSON.stringify(
+        {
+          schemaVersion: JSON_SCHEMA_VERSION,
+          ok: true,
+          command: action.name,
+          data: payload.data ?? null,
+          ...(payload.meta ? { meta: payload.meta } : {}),
+        },
+        null,
+        2,
+      );
+    }
   }
+}
+
+/** The `--format json` envelope for a failed command. */
+export function formatJsonError(
+  command: string,
+  code: string,
+  message: string,
+): string {
+  return JSON.stringify(
+    {
+      schemaVersion: JSON_SCHEMA_VERSION,
+      ok: false,
+      command,
+      error: { code, message },
+    },
+    null,
+    2,
+  );
 }
 
 // ── Shared formatting helpers ────────────────────────────────────────

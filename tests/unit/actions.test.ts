@@ -811,21 +811,58 @@ describe("get-messages", () => {
     });
   });
 
-  it("should pass since option to client", async () => {
+  it("should pass since option to client, normalized to UTC", async () => {
     const client = createMockClient({
       getMessages: vi.fn().mockResolvedValue([]),
     });
 
     await action.execute(client, {
       conversationId: "19:test@thread.v2",
-      since: "2026-03-26T00:00:00Z",
+      since: "2026-03-26T05:00:00+05:00",
     });
 
     expect(client.getMessages).toHaveBeenCalledWith("19:test@thread.v2", {
       limit: undefined,
-      since: "2026-03-26T00:00:00Z",
+      since: "2026-03-26T00:00:00.000Z",
       onProgress: undefined,
     });
+  });
+
+  it("should reject an unparseable since value before contacting Teams", async () => {
+    const client = createMockClient({
+      getMessages: vi.fn().mockResolvedValue([]),
+    });
+
+    await expect(
+      action.execute(client, {
+        conversationId: "19:test@thread.v2",
+        since: "yesterday",
+      }),
+    ).rejects.toThrow('Invalid "since" value "yesterday"');
+    expect(client.getMessages).not.toHaveBeenCalled();
+  });
+
+  it("should accept a relative since duration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-28T12:00:00.000Z"));
+    try {
+      const client = createMockClient({
+        getMessages: vi.fn().mockResolvedValue([]),
+      });
+
+      await action.execute(client, {
+        conversationId: "19:test@thread.v2",
+        since: "24h",
+      });
+
+      expect(client.getMessages).toHaveBeenCalledWith("19:test@thread.v2", {
+        limit: undefined,
+        since: "2026-10-27T12:00:00.000Z",
+        onProgress: undefined,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("should reverse to oldest-first by default", async () => {
@@ -3216,7 +3253,26 @@ describe("action registry (parametrized)", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it("should block exactly the actions that change Teams or send data out in read-only mode", () => {
+    const blocked = actions
+      .filter((action) => action.access !== "read")
+      .map((action) => action.name)
+      .sort();
+    expect(blocked).toEqual([
+      "add-reaction",
+      "delete-message",
+      "describe-image",
+      "edit-message",
+      "remove-reaction",
+      "send-message",
+    ]);
+  });
+
   describe.each(actions)("$name", (action) => {
+    it("should declare what it may change", () => {
+      expect(["read", "write", "external"]).toContain(action.access);
+    });
+
     it("should have non-empty title and description", () => {
       expect(action.title.length).toBeGreaterThan(0);
       expect(action.description.length).toBeGreaterThan(0);
@@ -3248,10 +3304,11 @@ describe("action registry (parametrized)", () => {
   });
 
   describe("formatOutput", () => {
-    const formats: OutputFormat[] = ["concise", "detailed"];
+    const formats: OutputFormat[] = ["concise", "detailed", "json"];
 
     it.each(formats)("should produce string output for %s format", (format) => {
-      const sampleData = { test: true };
+      // actions[0] is list-conversations; an empty list is a valid result.
+      const sampleData: unknown[] = [];
       const output = formatOutput(actions[0], sampleData, format);
       expect(typeof output).toBe("string");
       expect(output.length).toBeGreaterThan(0);
@@ -3261,6 +3318,149 @@ describe("action registry (parametrized)", () => {
       const sampleData = { key: "value" };
       const output = formatOutput(actions[0], sampleData, "detailed");
       expect(() => JSON.parse(output)).not.toThrow();
+    });
+
+    it("should wrap json output in a versioned envelope", () => {
+      const action = actions.find((entry) => entry.name === "whoami")!;
+      const output = JSON.parse(
+        formatOutput(
+          action,
+          { displayName: "Alice Smith", region: "apac" },
+          "json",
+        ),
+      );
+      expect(output).toEqual({
+        schemaVersion: 1,
+        ok: true,
+        command: "whoami",
+        data: { displayName: "Alice Smith", region: "apac" },
+      });
+    });
+  });
+});
+
+describe("json output", () => {
+  function findAction(name: string): ActionDefinition {
+    const action = actions.find((entry) => entry.name === name);
+    if (!action) throw new Error(`missing action ${name}`);
+    return action;
+  }
+
+  it("maps search results to the message shape with links", () => {
+    const output = JSON.parse(
+      formatOutput(
+        findAction("search-messages"),
+        {
+          messages: [
+            {
+              id: "search-result-1",
+              messageId: "1761642900000",
+              conversationId: "19:dev@thread.v2",
+              senderDisplayName: "Alice Smith",
+              senderEmail: "alice@contoso.com",
+              sentAt: "2026-10-28T09:15:00Z",
+              preview: "login page is blank",
+              webUrl:
+                "https://teams.microsoft.com/l/message/19%3Adev%40thread.v2/1761642900000",
+            },
+          ],
+          total: 1,
+          hasMore: false,
+        },
+        "json",
+      ),
+    );
+
+    expect(output.data).toEqual([
+      {
+        id: "1761642900000",
+        searchResultId: "search-result-1",
+        conversationId: "19:dev@thread.v2",
+        conversationName: null,
+        threadRootId: null,
+        threadType: null,
+        link: "https://teams.microsoft.com/l/message/19%3Adev%40thread.v2/1761642900000",
+        createdAt: "2026-10-28T09:15:00Z",
+        sender: { id: null, name: "Alice Smith", email: "alice@contoso.com" },
+        subject: null,
+        preview: "login page is blank",
+      },
+    ]);
+    expect(output.meta).toEqual({
+      count: 1,
+      total: 1,
+      hasMore: false,
+      nextOffset: null,
+    });
+  });
+
+  it("includes the resolved conversation for members", async () => {
+    const action = findAction("get-members");
+    const client = createMockClient({
+      findConversation: vi.fn().mockResolvedValue({
+        id: "19:dev@thread.v2",
+        topic: "Development team",
+        threadType: "chat",
+        version: 1,
+        lastMessageTime: null,
+        memberCount: null,
+      }),
+      getMembers: vi.fn().mockResolvedValue([
+        {
+          id: "8:orgid:aaaaaaaa-0000-0000-0000-000000000001",
+          displayName: "Alice Smith",
+          role: "Admin",
+          memberType: "person",
+        },
+      ]),
+    });
+
+    const result = await action.execute(client, { chat: "Development" });
+    const output = JSON.parse(formatOutput(action, result, "json"));
+
+    expect(output.meta).toEqual({
+      conversationId: "19:dev@thread.v2",
+      conversationLabel: "Development team",
+      count: 1,
+    });
+    expect(output.data).toEqual([
+      {
+        id: "8:orgid:aaaaaaaa-0000-0000-0000-000000000001",
+        name: "Alice Smith",
+        role: "Admin",
+        type: "person",
+      },
+    ]);
+  });
+
+  it("returns null data when find-conversation finds nothing", () => {
+    const output = JSON.parse(
+      formatOutput(findAction("find-conversation"), null, "json"),
+    );
+    expect(output).toMatchObject({ ok: true, data: null });
+  });
+
+  it("links channel thread replies to their root message", async () => {
+    const action = findAction("get-messages");
+    const client = createMockClient({
+      getMessages: vi.fn().mockResolvedValue([
+        makeMessage({
+          id: "1761642900000",
+          originalArrivalTime: "2026-10-28T09:15:00.000Z",
+        }),
+      ]),
+    });
+
+    const result = await action.execute(client, {
+      conversationId: "19:channel@thread.tacv2",
+      messageId: "1761600000000",
+    });
+    const output = JSON.parse(formatOutput(action, result, "json"));
+
+    expect(output.data[0]).toMatchObject({
+      conversationId: "19:channel@thread.tacv2",
+      threadRootId: "1761600000000",
+      link: "https://teams.microsoft.com/l/message/19%3Achannel%40thread.tacv2/1761642900000?parentMessageId=1761600000000",
     });
   });
 });

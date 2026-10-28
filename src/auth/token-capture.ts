@@ -8,6 +8,7 @@
 import type { Page } from "playwright";
 import { detectTeamsRegionFromUrl } from "../region.js";
 import { diagnosePageState } from "./page-diagnostics.js";
+import { redactUrl } from "../redact.js";
 
 export const TOKEN_INTERCEPT_TIMEOUT = 90 * 1_000;
 export const PAGE_RELOAD_TIMEOUT = 30 * 1_000;
@@ -275,7 +276,7 @@ export async function captureTokensFromPage(
   if (!skypeToken && !chatBearerToken) {
     const state = await diagnosePageState(page);
     throw new Error(
-      `Failed to capture skype token. Page state: ${state.phase} — ${state.detail} (URL: ${state.url})`,
+      `Failed to capture skype token. Page state: ${state.phase} — ${state.detail} (URL: ${redactUrl(state.url)})`,
     );
   }
 

@@ -5,6 +5,8 @@
  * Microsoft login flow, used for progress reporting and error messages.
  */
 
+import { redactUrl } from "../redact.js";
+
 /** Describes the current state of the page during the login flow. */
 export interface PageState {
   url: string;
@@ -90,5 +92,9 @@ export async function diagnosePageState(page: {
     };
   }
 
-  return { url, phase: "unknown", detail: `Unexpected page: ${url}` };
+  return {
+    url,
+    phase: "unknown",
+    detail: `Unexpected page: ${redactUrl(url)}`,
+  };
 }

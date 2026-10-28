@@ -10,42 +10,108 @@
  * | Windows  | Windows Credential Manager via keytar (native wincred) |
  * | Linux    | `secret-tool` (libsecret) if available, else file with |
  * |          | 0o600 perms at ~/.config/teams-api/                    |
+ *
+ * `FileCredentialStore` is a private file cache (~/.teams-api/tokens) used
+ * when the platform store is unavailable, such as the locked login Keychain
+ * in an SSH session. See `src/token-store.ts` for how the stores combine.
+ *
+ * Errors thrown from this module never contain the stored data.
  */
 
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
   unlinkSync,
+  type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { redactSecrets } from "./redact.js";
 
 export interface CredentialStore {
+  /** Human-readable name used in warnings (e.g. "macOS Keychain"). */
+  readonly label: string;
   save(account: string, data: string): Promise<void>;
   load(account: string): Promise<string | null>;
   clear(account: string): Promise<void>;
+}
+
+/** A credential store operation failed. The message never contains stored data. */
+export class CredentialStoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CredentialStoreError";
+  }
 }
 
 // ── macOS: System Keychain ────────────────────────────────────────────
 
 const CREDENTIAL_SERVICE = "teams-api";
 
+/**
+ * Summarize a failed `security` invocation from its stderr only.
+ *
+ * Node's own error message for a failed `execFileSync` repeats the full
+ * command line, which includes the `-w <data>` argument, so it must never be
+ * surfaced. `security` writes lines such as
+ * "security: SecKeychainItemCreateFromContent (<default>): User interaction is not allowed."
+ */
+function describeSecurityFailure(error: unknown): string {
+  const failure = error as { stderr?: unknown; status?: unknown };
+  const stderr =
+    typeof failure.stderr === "string"
+      ? failure.stderr
+      : Buffer.isBuffer(failure.stderr)
+        ? failure.stderr.toString("utf-8")
+        : "";
+  const firstLine = stderr
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (firstLine) {
+    const detail = firstLine
+      .replace(/^security:\s*/, "")
+      .replace(/^[A-Za-z]+\s*(?:\([^)]*\))?:\s*/, "");
+    return redactSecrets(detail).slice(0, 200);
+  }
+  return typeof failure.status === "number"
+    ? `security exited with status ${failure.status}`
+    : "security could not be run";
+}
+
 class KeychainStore implements CredentialStore {
+  readonly label = "macOS Keychain";
+
   async save(account: string, data: string): Promise<void> {
-    execFileSync("security", [
-      "add-generic-password",
-      "-a",
-      account,
-      "-s",
-      CREDENTIAL_SERVICE,
-      "-w",
-      data,
-      "-U",
-    ]);
+    try {
+      execFileSync(
+        "security",
+        [
+          "add-generic-password",
+          "-a",
+          account,
+          "-s",
+          CREDENTIAL_SERVICE,
+          "-w",
+          data,
+          "-U",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      throw new CredentialStoreError(describeSecurityFailure(error));
+    }
   }
 
   async load(account: string): Promise<string | null> {
@@ -60,22 +126,21 @@ class KeychainStore implements CredentialStore {
           CREDENTIAL_SERVICE,
           "-w",
         ],
-        { encoding: "utf-8" },
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
       ).trim();
     } catch {
+      // Missing item or locked keychain (e.g. in an SSH session).
       return null;
     }
   }
 
   async clear(account: string): Promise<void> {
     try {
-      execFileSync("security", [
-        "delete-generic-password",
-        "-a",
-        account,
-        "-s",
-        CREDENTIAL_SERVICE,
-      ]);
+      execFileSync(
+        "security",
+        ["delete-generic-password", "-a", account, "-s", CREDENTIAL_SERVICE],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
     } catch {
       // Entry may not exist, that's fine
     }
@@ -118,6 +183,8 @@ const WINCRED_MAX_BLOB = 2560;
 const CHUNK_MARKER = "CHUNKED:";
 
 class WinCredStore implements CredentialStore {
+  readonly label = "Windows Credential Manager";
+
   async save(account: string, data: string): Promise<void> {
     const key = accountKey(account);
     const kt = getKeytar();
@@ -225,6 +292,12 @@ class LinuxStore implements CredentialStore {
     this.useSecretTool = hasSecretTool();
   }
 
+  get label(): string {
+    return this.useSecretTool
+      ? "Linux secret service"
+      : "token file in ~/.config/teams-api";
+  }
+
   private getFilePath(account: string): string {
     const dir = getLinuxStorePath();
     return join(dir, accountToFileName(account));
@@ -318,8 +391,130 @@ class LinuxStore implements CredentialStore {
   }
 }
 
+// ── Private file cache (all platforms) ───────────────────────────────
+//
+// One file per account in ~/.teams-api/tokens. The directory is 0700 and each
+// file is 0600, written atomically (exclusive create, fsync, rename). Paths
+// that are symlinks, owned by another user, or readable by other users are
+// refused. This matches how the browser profile in ~/.teams-api is protected.
+
+/** Directory of the private token file cache. */
+export function getTokenCacheDirectory(): string {
+  return join(homedir(), ".teams-api", "tokens");
+}
+
+function describeFileError(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" ? code : "unknown error";
+}
+
+function isOwnedByCurrentUser(stats: Stats): boolean {
+  return typeof process.getuid !== "function" || stats.uid === process.getuid();
+}
+
+function hasPrivatePermissions(stats: Stats): boolean {
+  return process.platform === "win32" || (stats.mode & 0o077) === 0;
+}
+
+export class FileCredentialStore implements CredentialStore {
+  /** Omit the directory to follow the current home directory on every call. */
+  constructor(private readonly directoryOverride?: string) {}
+
+  get label(): string {
+    const home = homedir();
+    const displayDirectory = this.directory.startsWith(home)
+      ? `~${this.directory.slice(home.length)}`
+      : this.directory;
+    return `token file in ${displayDirectory}`;
+  }
+
+  private get directory(): string {
+    return this.directoryOverride ?? getTokenCacheDirectory();
+  }
+
+  async save(account: string, data: string): Promise<void> {
+    this.ensurePrivateDirectory();
+    const filePath = this.getFilePath(account);
+    const temporaryPath = `${filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      const descriptor = openSync(temporaryPath, "wx", 0o600);
+      try {
+        writeFileSync(descriptor, data, "utf-8");
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
+      renameSync(temporaryPath, filePath);
+    } catch (error) {
+      rmSync(temporaryPath, { force: true });
+      throw new CredentialStoreError(
+        `could not write the token cache file (${describeFileError(error)})`,
+      );
+    }
+  }
+
+  async load(account: string): Promise<string | null> {
+    const filePath = this.getFilePath(account);
+    let stats: Stats;
+    try {
+      stats = lstatSync(filePath);
+    } catch {
+      return null;
+    }
+    if (!stats.isFile() || !isOwnedByCurrentUser(stats)) {
+      throw new CredentialStoreError(
+        `ignored ${filePath} because it is not a regular file owned by you`,
+      );
+    }
+    if (!hasPrivatePermissions(stats)) {
+      throw new CredentialStoreError(
+        `ignored ${filePath} because other users can access it (fix with: chmod 600 "${filePath}")`,
+      );
+    }
+    try {
+      const data = readFileSync(filePath, "utf-8").trim();
+      return data.length > 0 ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async clear(account: string): Promise<void> {
+    try {
+      rmSync(this.getFilePath(account), { force: true });
+    } catch {
+      // Nothing to remove
+    }
+  }
+
+  private getFilePath(account: string): string {
+    return join(this.directory, `${accountKey(account)}.token`);
+  }
+
+  private ensurePrivateDirectory(): void {
+    let stats: Stats;
+    try {
+      mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+      stats = lstatSync(this.directory);
+    } catch (error) {
+      throw new CredentialStoreError(
+        `could not create the token cache directory (${describeFileError(error)})`,
+      );
+    }
+    if (!stats.isDirectory() || !isOwnedByCurrentUser(stats)) {
+      throw new CredentialStoreError(
+        `${this.directory} is not a directory owned by you`,
+      );
+    }
+    if (!hasPrivatePermissions(stats)) {
+      chmodSync(this.directory, 0o700);
+    }
+  }
+}
+
 // ── Factory ──────────────────────────────────────────────────────────
 
+/** The platform credential store (Keychain, Credential Manager, or secret-tool). */
 export function createCredentialStore(): CredentialStore {
   switch (process.platform) {
     case "darwin":
@@ -329,4 +524,9 @@ export function createCredentialStore(): CredentialStore {
     default:
       return new LinuxStore();
   }
+}
+
+/** The private file cache in ~/.teams-api/tokens. */
+export function createFileCredentialStore(): CredentialStore {
+  return new FileCredentialStore();
 }

@@ -1,14 +1,23 @@
 /**
  * Unit tests for the token store (src/token-store.ts).
  *
- * These tests mock the credential store to verify that the token store
- * correctly serializes/deserializes tokens and handles expiry.
+ * These tests mock the credential stores to verify that the token store
+ * correctly serializes/deserializes tokens, handles expiry, and falls back
+ * to the private file cache without ever printing a token.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { TeamsToken } from "../../src/types.js";
 
 const mockStore = vi.hoisted(() => ({
+  label: "macOS Keychain",
+  save: vi.fn(),
+  load: vi.fn(),
+  clear: vi.fn(),
+}));
+
+const mockFileStore = vi.hoisted(() => ({
+  label: "token file in ~/.teams-api/tokens",
   save: vi.fn(),
   load: vi.fn(),
   clear: vi.fn(),
@@ -16,9 +25,15 @@ const mockStore = vi.hoisted(() => ({
 
 vi.mock("../../src/credential-store.js", () => ({
   createCredentialStore: () => mockStore,
+  createFileCredentialStore: () => mockFileStore,
 }));
 
-import { saveToken, loadToken, clearToken } from "../../src/token-store.js";
+import {
+  saveToken,
+  loadToken,
+  clearToken,
+  resetTokenStoreState,
+} from "../../src/token-store.js";
 
 const testEmail = "user@company.com";
 const testToken: TeamsToken = {
@@ -33,15 +48,36 @@ const testTokenWithAuxiliaryTokens: TeamsToken = {
   substrateToken: "test-substrate-token",
 };
 
+let stderrWrite: { mock: { calls: unknown[][] }; mockRestore: () => void };
+
 beforeEach(() => {
   vi.resetAllMocks();
+  resetTokenStoreState();
+  vi.stubEnv("TEAMS_TOKEN_STORE", "");
+  stderrWrite = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(() => true);
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-03-17T12:00:00.000Z"));
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
+  stderrWrite.mockRestore();
 });
+
+function stderrOutput(): string {
+  return stderrWrite.mock.calls
+    .map((call: unknown[]) => String(call[0]))
+    .join("");
+}
+
+function encodeStoredToken(token: TeamsToken, acquiredAt: number): string {
+  return Buffer.from(JSON.stringify({ ...token, acquiredAt })).toString(
+    "base64",
+  );
+}
 
 function makeStoredTokenBase64(
   overrides: { acquiredAt?: number } = {},
@@ -230,11 +266,133 @@ describe("loadToken", () => {
   });
 });
 
+describe("fallback to the private file cache", () => {
+  it("saves to the file cache when the Keychain refuses the write, without printing the token", async () => {
+    // The raw Node error for a failed `security` call repeats the command
+    // line, including `-w <token bundle>`: exactly what leaked over SSH.
+    mockStore.save.mockImplementation(async (account: string, data: string) => {
+      throw new Error(
+        `Command failed: security add-generic-password -a ${account} -s teams-api -w ${data} -U\n` +
+          "security: SecKeychainItemCreateFromContent (<default>): User interaction is not allowed.",
+      );
+    });
+    mockFileStore.save.mockResolvedValue(undefined);
+
+    await expect(
+      saveToken(testEmail, testTokenWithAuxiliaryTokens),
+    ).resolves.toBe(true);
+
+    const savedData = mockFileStore.save.mock.calls[0][1] as string;
+    expect(mockFileStore.save).toHaveBeenCalledWith(testEmail, savedData);
+    const output = stderrOutput();
+    expect(output).toContain("saved it to the token file");
+    expect(output).toContain("User interaction is not allowed");
+    expect(output).not.toContain(savedData);
+    expect(output).not.toContain(testTokenWithAuxiliaryTokens.skypeToken);
+    expect(output).not.toContain(testTokenWithAuxiliaryTokens.bearerToken);
+    expect(output).not.toContain(testTokenWithAuxiliaryTokens.substrateToken);
+  });
+
+  it("stops retrying the Keychain after it refused once in this process", async () => {
+    mockStore.save.mockRejectedValue(
+      new Error("User interaction is not allowed."),
+    );
+    mockFileStore.save.mockResolvedValue(undefined);
+
+    await saveToken(testEmail, testToken);
+    await saveToken("_default", testToken);
+
+    expect(mockStore.save).toHaveBeenCalledTimes(1);
+    expect(mockFileStore.save).toHaveBeenCalledTimes(2);
+    expect(stderrOutput().match(/saved it to the token file/g)).toHaveLength(1);
+  });
+
+  it("never throws when every store refuses the write", async () => {
+    mockStore.save.mockRejectedValue(
+      new Error("User interaction is not allowed."),
+    );
+    mockFileStore.save.mockRejectedValue(new Error("EACCES"));
+
+    await expect(saveToken(testEmail, testToken)).resolves.toBe(false);
+    expect(stderrOutput()).toContain(
+      "Continuing with the token in memory only",
+    );
+  });
+
+  it("uses only the file cache when TEAMS_TOKEN_STORE=file", async () => {
+    vi.stubEnv("TEAMS_TOKEN_STORE", "file");
+    mockFileStore.save.mockResolvedValue(undefined);
+    mockFileStore.load.mockResolvedValue(
+      encodeStoredToken(testToken, Date.now()),
+    );
+
+    await saveToken(testEmail, testToken);
+    const result = await loadToken(testEmail);
+
+    expect(result).toEqual(testToken);
+    expect(mockStore.save).not.toHaveBeenCalled();
+    expect(mockStore.load).not.toHaveBeenCalled();
+  });
+
+  it("uses only the platform store when TEAMS_TOKEN_STORE=system", async () => {
+    vi.stubEnv("TEAMS_TOKEN_STORE", "system");
+    mockStore.save.mockRejectedValue(
+      new Error("User interaction is not allowed."),
+    );
+
+    await expect(saveToken(testEmail, testToken)).resolves.toBe(false);
+    expect(mockFileStore.save).not.toHaveBeenCalled();
+  });
+
+  it("loads the newest valid token across both stores", async () => {
+    const now = Date.now();
+    const olderToken: TeamsToken = {
+      skypeToken: "older-skype-token-value",
+      region: "apac",
+    };
+    const newerToken: TeamsToken = {
+      skypeToken: "newer-skype-token-value",
+      region: "apac",
+    };
+    mockStore.load.mockResolvedValue(
+      encodeStoredToken(olderToken, now - 2 * 60 * 60 * 1_000),
+    );
+    mockFileStore.load.mockResolvedValue(
+      encodeStoredToken(newerToken, now - 60 * 60 * 1_000),
+    );
+
+    await expect(loadToken(testEmail)).resolves.toEqual(newerToken);
+  });
+
+  it("clears only the store whose token expired", async () => {
+    const now = Date.now();
+    mockStore.load.mockResolvedValue(
+      encodeStoredToken(testToken, now - 24 * 60 * 60 * 1_000),
+    );
+    mockFileStore.load.mockResolvedValue(encodeStoredToken(testToken, now));
+
+    await expect(loadToken(testEmail)).resolves.toEqual(testToken);
+    expect(mockStore.clear).toHaveBeenCalledWith(testEmail);
+    expect(mockFileStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("warns and continues when a store cannot be read", async () => {
+    mockFileStore.load.mockRejectedValue(
+      new Error("ignored token file because other users can access it"),
+    );
+    mockStore.load.mockResolvedValue(encodeStoredToken(testToken, Date.now()));
+
+    await expect(loadToken(testEmail)).resolves.toEqual(testToken);
+    expect(stderrOutput()).toContain("other users can access it");
+  });
+});
+
 describe("clearToken", () => {
   it("should call credential store clear", async () => {
     await clearToken(testEmail);
 
     expect(mockStore.clear).toHaveBeenCalledWith(testEmail);
+    expect(mockFileStore.clear).toHaveBeenCalledWith(testEmail);
   });
 
   it("should not throw when token does not exist in credential store", async () => {

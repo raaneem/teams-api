@@ -17,6 +17,7 @@ import type {
 import { canAttemptAutoLogin } from "./platform.js";
 import { acquireTokenViaAutoLogin } from "./auth/auto-login.js";
 import { acquireTokenViaInteractiveLogin } from "./auth/interactive.js";
+import { safeErrorMessage } from "./redact.js";
 
 export async function acquireTokenViaSmartLogin(
   options?: SmartLoginOptions,
@@ -37,7 +38,7 @@ export async function acquireTokenViaSmartLogin(
       });
     } catch (error) {
       log(
-        `Auto-login failed: ${(error as Error).message}. Falling back to interactive login...`,
+        `Auto-login failed: ${safeErrorMessage(error)}. Falling back to interactive login...`,
       );
     }
   }

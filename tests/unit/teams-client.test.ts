@@ -1771,6 +1771,41 @@ describe("getMessages", () => {
     expect(messages.map((m) => m.id)).toEqual(["1", "2"]);
   });
 
+  it("should compare since as an instant, honoring timezone offsets", async () => {
+    mockedApi.fetchMessagesPage.mockResolvedValueOnce(
+      makeMessagesPage(
+        [
+          makeMessage({
+            id: "1",
+            originalArrivalTime: "2026-03-26T06:00:00.000Z",
+          }),
+          makeMessage({
+            id: "2",
+            originalArrivalTime: "2026-03-26T04:00:00.000Z",
+          }),
+        ],
+        null,
+      ),
+    );
+
+    const client = TeamsClient.fromToken("token");
+    // 10:00 at UTC+05:00 is 05:00Z: a string comparison would drop message 1.
+    const messages = await client.getMessages("conv-id", {
+      since: "2026-03-26T10:00:00+05:00",
+    });
+
+    expect(messages.map((m) => m.id)).toEqual(["1"]);
+  });
+
+  it("should reject an unparseable since instead of returning nothing", async () => {
+    const client = TeamsClient.fromToken("token");
+
+    await expect(
+      client.getMessages("conv-id", { since: "yesterday" }),
+    ).rejects.toThrow('Invalid "since" timestamp');
+    expect(mockedApi.fetchMessagesPage).not.toHaveBeenCalled();
+  });
+
   it("should stop paginating early when since cutoff is reached", async () => {
     mockedApi.fetchMessagesPage
       .mockResolvedValueOnce(

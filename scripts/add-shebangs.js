@@ -10,7 +10,11 @@ const { readFileSync, writeFileSync, chmodSync } = require("node:fs");
 const { resolve } = require("node:path");
 
 const NODE_SHEBANG = "#!/usr/bin/env node\n";
-const entryPoints = ["dist/cli.js", "dist/mcp-server.js"];
+const entryPoints = [
+  "dist/cli.js",
+  "dist/mcp-server.js",
+  "dist/ssh-wrapper.js",
+];
 
 for (const relativePath of entryPoints) {
   const filePath = resolve(__dirname, "..", relativePath);

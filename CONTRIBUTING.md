@@ -51,13 +51,18 @@ src/
   html-utils.ts         HTML entity decoding utilities
   region.ts             Region resolution and validation
   teams-client.ts       Public API class (TeamsClient) — the main entry point
-  token-store.ts        Cross-platform token persistence (via credential-store)
-  credential-store.ts   Platform credential stores (Keychain, DPAPI, secret-tool)
+  token-store.ts        Token persistence: platform store with a private file fallback
+  credential-store.ts   Platform credential stores (Keychain, DPAPI, secret-tool) and the file cache
+  redact.ts             Secret redaction for all output, logs, and errors
+  read-only.ts          Read-only mode guards (action, client, and HTTP layers)
+  runtime-flags.ts      TEAMS_READ_ONLY, TEAMS_NON_INTERACTIVE, TEAMS_TOKEN_STORE parsing
+  since.ts              Parsing for --since cutoffs
   platform.ts           Platform detection and auto-login eligibility
   smart-login.ts        Smart login — auto-login with interactive fallback
   browser-runtime.ts    Installed-browser detection and Playwright launch helpers
   cli.ts                Commander-based CLI (driven by actions/definitions)
   mcp-server.ts         MCP server with stdio transport
+  ssh-wrapper.ts        teams-api-ssh: forced-command wrapper for read-only bot access over SSH
   server-instructions.ts  MCP server instructions and CLI guide content
   api/
     common.ts           Shared HTTP utilities and headers
@@ -153,7 +158,10 @@ See [docs/findings.md](docs/findings.md) for detailed REST API endpoint document
 
 ### Testing
 
-**Unit tests** (`tests/unit/`): Mock `fetch` globally and test the API and client layers in isolation. No network access required.
+**Unit tests** (`tests/unit/`): Mock `fetch` globally and test the API and client layers in isolation. No network access required. `cli.test.ts` runs the CLI in-process with a simulated locked Keychain and a temporary `HOME`, and checks that no token reaches stdout or stderr.
+
+> [!WARNING]
+> `npm test` also runs the integration and E2E suites when `TEAMS_TOKEN` or `TEAMS_EMAIL` is set, and the E2E suite sends, edits, and deletes messages. Use `npm run test:unit` unless you mean to test against a live account.
 
 ```bash
 npm test

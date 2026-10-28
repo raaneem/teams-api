@@ -20,6 +20,7 @@ npx -y -p teams-api@latest teams-api <command> [options]
 3. Inspect exact arguments with `npx -y -p teams-api@latest teams-api <command> --help`.
 4. Run the command. Authentication is automatic by default; use `--login` when an interactive browser login is needed.
 5. Keep the default concise output for reading. Use `--format detailed` when exact structured data is needed.
+6. For scripts and bots, use `--json` for stable, versioned output, and set `TEAMS_READ_ONLY=true` so write commands refuse.
 
 Do not ask users to paste tokens unless they explicitly choose manual token authentication. Before write operations, verify the target conversation and content. Never expose authentication output.
 
