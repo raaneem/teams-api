@@ -5,6 +5,8 @@
  * used by chat-service, middle-tier, substrate, and transcript modules.
  */
 
+import { assertRequestAllowed } from "../read-only.js";
+
 export class ApiAuthError extends Error {
   constructor(message: string) {
     super(message);
@@ -56,11 +58,24 @@ function delay(milliseconds: number): Promise<void> {
  *
  * Uses the `Retry-After` header when present; otherwise applies exponential backoff
  * starting at 2 seconds. Retries up to 5 times before throwing `ApiRateLimitError`.
+ *
+ * In read-only mode, requests that could change data are refused before they
+ * are sent (see `src/read-only.ts`).
  */
 export async function fetchWithRetry(
   input: string | URL | Request,
   init?: RequestInit,
 ): Promise<Response> {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+  const method =
+    init?.method ?? (input instanceof Request ? input.method : "GET");
+  assertRequestAllowed(url, method);
+
   for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
     const response = await fetch(input, init);
 

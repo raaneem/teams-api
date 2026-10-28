@@ -9,6 +9,7 @@
 import type { TeamsToken, AutoLoginOptions } from "../types.js";
 import { resolveTeamsRegion } from "../region.js";
 import { diagnosePageState } from "./page-diagnostics.js";
+import { redactUrl } from "../redact.js";
 import {
   captureTokensFromPage,
   TOKEN_INTERCEPT_TIMEOUT,
@@ -92,7 +93,7 @@ export async function acquireTokenViaAutoLogin(
     });
 
     // Wait for Entra ID login page
-    log(`Current URL: ${page.url()}`);
+    log(`Current URL: ${redactUrl(page.url())}`);
     log("Waiting for Entra ID login page...");
     await page
       .waitForURL(/login\.microsoftonline\.com|login\.microsoft\.com/, {
@@ -151,12 +152,12 @@ export async function acquireTokenViaAutoLogin(
         const state = await diagnosePageState(page);
         throw new Error(
           `Login did not complete within ${AUTO_LOGIN_TIMEOUT / 1_000}s. ` +
-            `Current state: ${state.phase} — ${state.detail} (URL: ${state.url})`,
+            `Current state: ${state.phase} — ${state.detail} (URL: ${redactUrl(state.url)})`,
         );
       }
     }
 
-    log(`Login flow finished. URL: ${page.url()}`);
+    log(`Login flow finished. URL: ${redactUrl(page.url())}`);
 
     // Capture tokens via shared helper
     log("Capturing tokens...");

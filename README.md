@@ -202,15 +202,15 @@ Manual token usage, debug-session auth, and programmatic Node.js usage are cover
 
 ## Platform support
 
-| Feature                | macOS          | Windows / Linux                   |
-| ---------------------- | -------------- | --------------------------------- |
-| **Interactive login**  | Full support   | Full support                      |
-| **Auto-login (FIDO2)** | Full support   | Not supported                     |
-| **Debug session**      | Full support   | Full support                      |
-| **Direct token**       | Full support   | Full support                      |
-| **Token caching**      | macOS Keychain | Windows DPAPI / Linux secret-tool |
-| **CLI & MCP server**   | Full support   | Full support                      |
-| **Programmatic API**   | Full support   | Full support                      |
+| Feature                | macOS                                        | Windows / Linux                                                 |
+| ---------------------- | -------------------------------------------- | --------------------------------------------------------------- |
+| **Interactive login**  | Full support                                 | Full support                                                    |
+| **Auto-login (FIDO2)** | Full support                                 | Not supported                                                   |
+| **Debug session**      | Full support                                 | Full support                                                    |
+| **Direct token**       | Full support                                 | Full support                                                    |
+| **Token caching**      | macOS Keychain, with a private file fallback | Windows DPAPI / Linux secret-tool, with a private file fallback |
+| **CLI & MCP server**   | Full support                                 | Full support                                                    |
+| **Programmatic API**   | Full support                                 | Full support                                                    |
 
 > [!NOTE]
 > **Windows Defender false positive:** Older versions of this package used inline PowerShell to call the Windows DPAPI — a pattern that Windows Defender flags as ransomware-like behavior. This has been replaced with native Windows Credential Manager storage via [keytar](https://github.com/atom/node-keytar). If you hit issues on an older version, upgrade and re-run `teams-api auth --login`. See [SECURITY.md](./SECURITY.md) for details.
@@ -316,7 +316,9 @@ The examples below use `teams-api` for readability. If you are not installing gl
 | `--substrate-token <token>` | Optional Substrate bearer token (advanced/manual)                                |
 | `--debug-port <port>`       | Chrome debug port (default: 9222)                                                |
 | `--region <region>`         | API region override. Auto-detected for login/debug auth; required with `--token` |
-| `--format <format>`         | Output format: concise, detailed                                                 |
+| `--read-only`               | Refuse every command that changes Teams (same as `TEAMS_READ_ONLY=true`)         |
+| `--format <format>`         | Output format: concise, detailed, json                                           |
+| `--json`                    | Same as `--format json`: stable, versioned JSON for scripts                      |
 | `--output <file>`           | Export output to file (default format: concise)                                  |
 
 ### Examples
@@ -434,27 +436,30 @@ Use this only if you already have tokens from another flow or need to avoid brow
 ```
 
 > [!TIP]
-> If you do use direct tokens, `teams-api auth --login` prints the full token object as JSON. For basic chat operations, `skypeToken` is enough. For reliable people/chat/channel search and profile resolution, also pass `bearerToken` and `substrateToken`.
+> If you do use direct tokens, `teams-api auth --login --print-token` prints the full token object as JSON (plain `teams-api auth` only reports which tokens are cached). Treat the output like a password. For basic chat operations, `skypeToken` is enough. For reliable people/chat/channel search and profile resolution, also pass `bearerToken` and `substrateToken`.
 
 ### Environment variables
 
-| Variable                        | Description                                                                            |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| `TEAMS_TOKEN`                   | Pre-existing skype token                                                               |
-| `TEAMS_BEARER_TOKEN`            | Optional middle-tier bearer token                                                      |
-| `TEAMS_SUBSTRATE_TOKEN`         | Optional Substrate bearer token                                                        |
-| `TEAMS_REGION`                  | API region override. Required with `TEAMS_TOKEN`; optional otherwise                   |
-| `TEAMS_EMAIL`                   | Corporate email. Optional — the server prompts the AI agent if needed                  |
-| `TEAMS_AUTO`                    | Set to `true` to enable auto-login (macOS + FIDO2)                                     |
-| `TEAMS_HEADLESS`                | Set to `true` to run FIDO2 auto-login without a visible browser                        |
-| `TEAMS_LOGIN`                   | Set to `true` to enable interactive browser login (reuses a cached token when valid)   |
-| `TEAMS_DEBUG_PORT`              | Chrome debug port (default: 9222)                                                      |
-| `TEAMS_EDIT_REPLY_GUARD`        | Edit reply guard: `allow` (default), `warn`, or `block`. See below                     |
-| `TEAMS_AGENT_MARKER`            | Agent marker prefix for sent/edited messages (e.g. `Ⓜ`). See below                    |
-| `TEAMS_DELETE_MODE`             | Delete mode: `hard` (default), `soft`, or `block`. See below                           |
-| `TEAMS_DELETE_TOMBSTONE`        | Custom tombstone text for soft-delete mode. See below                                  |
-| `TEAMS_AUDIT_LOG`               | Audit logging: `off` (default), `stderr`, or `file:<path>`. See below                  |
-| `TEAMS_PROTECTED_CONVERSATIONS` | Comma-separated glob patterns of conversations where edit/delete is blocked. See below |
+| Variable                        | Description                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `TEAMS_TOKEN`                   | Pre-existing skype token                                                                               |
+| `TEAMS_BEARER_TOKEN`            | Optional middle-tier bearer token                                                                      |
+| `TEAMS_SUBSTRATE_TOKEN`         | Optional Substrate bearer token                                                                        |
+| `TEAMS_REGION`                  | API region override. Required with `TEAMS_TOKEN`; optional otherwise                                   |
+| `TEAMS_EMAIL`                   | Corporate email. Optional — the server prompts the AI agent if needed                                  |
+| `TEAMS_AUTO`                    | Set to `true` to enable auto-login (macOS + FIDO2)                                                     |
+| `TEAMS_HEADLESS`                | Set to `true` to run FIDO2 auto-login without a visible browser                                        |
+| `TEAMS_LOGIN`                   | Set to `true` to enable interactive browser login (reuses a cached token when valid)                   |
+| `TEAMS_DEBUG_PORT`              | Chrome debug port (default: 9222)                                                                      |
+| `TEAMS_EDIT_REPLY_GUARD`        | Edit reply guard: `allow` (default), `warn`, or `block`. See below                                     |
+| `TEAMS_AGENT_MARKER`            | Agent marker prefix for sent/edited messages (e.g. `Ⓜ`). See below                                    |
+| `TEAMS_DELETE_MODE`             | Delete mode: `hard` (default), `soft`, or `block`. See below                                           |
+| `TEAMS_DELETE_TOMBSTONE`        | Custom tombstone text for soft-delete mode. See below                                                  |
+| `TEAMS_AUDIT_LOG`               | Audit logging: `off` (default), `stderr`, or `file:<path>`. See below                                  |
+| `TEAMS_PROTECTED_CONVERSATIONS` | Comma-separated glob patterns of conversations where edit/delete is blocked. See below                 |
+| `TEAMS_READ_ONLY`               | Set to `true` to expose only tools that read Teams. See [Unattended use](#unattended-use-bots-and-ssh) |
+| `TEAMS_TOKEN_STORE`             | Token cache: `auto` (default), `system`, or `file`. See [Unattended use](#unattended-use-bots-and-ssh) |
+| `TEAMS_NON_INTERACTIVE`         | Set to `true` to fail fast instead of waiting for someone to sign in                                   |
 
 #### Agent marker
 
@@ -587,6 +592,75 @@ Examples:
 teams-api describe-image --chat "Project Chat" --message-id 1773736076914 --image-index 0
 teams-api describe-image --ams-object-id 0-eaua-d2-877b82634f4e978692f2243d445a6650
 ```
+
+## Unattended use (bots and SSH)
+
+`teams-api` can run unattended, for example when a bot runs it on your Mac over SSH to read recent messages. Four features make that safe:
+
+- **The token cache works without the Keychain.** In an SSH session the macOS login Keychain is locked, so saving there fails with "User interaction is not allowed". `teams-api` then saves the token to a private file cache instead (`~/.teams-api/tokens`, directory `0700`, files `0600`, written atomically) and keeps going. Reads check both places and use the newest valid token. Set `TEAMS_TOKEN_STORE` to choose explicitly: `auto` (default: Keychain, falling back to the file), `system` (Keychain or platform store only), or `file` (file only). The browser profile in `~/.teams-api/browser-profile` already relies on the same file permissions.
+- **Tokens are never printed.** Errors, logs, and command output are redacted, and `teams-api auth` reports which tokens are cached and when they expire instead of printing them. Use `--print-token` only when you really need the raw token bundle.
+- **Read-only mode.** `TEAMS_READ_ONLY=true` (or `--read-only`) refuses `send-message`, `edit-message`, `delete-message`, `add-reaction`, `remove-reaction`, and `describe-image` before signing in, and the MCP server does not even offer those tools. As a second line of defense, the HTTP layer refuses every request except reads and the read-only profile and search endpoints.
+- **Stable JSON.** `--json` (or `--format json`) prints one JSON document per command:
+
+  ```json
+  {
+    "schemaVersion": 1,
+    "ok": true,
+    "command": "get-messages",
+    "data": [
+      {
+        "id": "1761642900000",
+        "conversationId": "19:abc@thread.v2",
+        "threadRootId": null,
+        "link": "https://teams.microsoft.com/l/message/19%3Aabc%40thread.v2/1761642900000",
+        "createdAt": "2026-10-28T09:15:00.000Z",
+        "editedAt": null,
+        "sender": { "id": "8:orgid:…", "name": "Alice Smith" },
+        "type": "RichText/Html",
+        "text": "The login page shows a blank screen",
+        "html": "<p>The login page shows a blank screen</p>"
+      }
+    ],
+    "meta": {
+      "conversationId": "19:abc@thread.v2",
+      "since": "2026-10-27T09:15:00.000Z",
+      "count": 1,
+      "newestCreatedAt": "2026-10-28T09:15:00.000Z",
+      "limitReached": false
+    }
+  }
+  ```
+
+  Message objects also include `subject`, `quote`, `isDeleted`, `mentions`, `reactions`, `files`, and `images`. `list-conversations`, `find-conversation`, `find-one-on-one`, `search-messages`, `get-members`, and `get-transcript` have JSON shapes too. Fields may be added but are never renamed; missing values are `null`. On failure the document is `{"schemaVersion": 1, "ok": false, "command": "...", "error": {"code": "...", "message": "..."}}` and the exit code says why:
+
+  | Exit code | Error code                     | Meaning                                                         |
+  | --------- | ------------------------------ | --------------------------------------------------------------- |
+  | 0         | —                              | Success                                                         |
+  | 1         | `ERROR`, `UPSTREAM_ERROR`      | Anything else                                                   |
+  | 2         | `INVALID_ARGUMENT`             | Bad arguments (for example an unparseable `--since`)            |
+  | 3         | `AUTH_REQUIRED`, `AUTH_FAILED` | Someone has to sign in again (`teams-api auth` at the computer) |
+  | 4         | `READ_ONLY`                    | Refused by read-only mode                                       |
+  | 5         | `RATE_LIMITED`                 | Teams kept rate-limiting after retries                          |
+
+`get-messages --since` accepts an ISO-8601 time with a timezone (`2026-10-28T09:30:00Z`, `2026-10-28T14:30:00+05:00`), a date (`2026-10-28`, midnight UTC), or a duration before now (`90m`, `24h`, `7d`). Anything else is rejected rather than guessed. For incremental polling, pass the previous run's `meta.newestCreatedAt`.
+
+Tokens are renewed by loading Teams in the saved browser profile, so no password is stored, but a browser window briefly opens on the computer's screen. With `TEAMS_NON_INTERACTIVE=true`, renewal gives up after 45 seconds with exit code 3 instead of waiting for someone to sign in. Run `teams-api auth` at the computer when that happens.
+
+### Locking a bot's SSH key to read-only commands
+
+An environment variable only prevents mistakes: anyone with a shell on the computer can unset it, or read the token cache directly. To give a bot read access without a shell, put the `teams-api-ssh` wrapper in front of its key in `~/.ssh/authorized_keys`. Use absolute paths, because non-interactive SSH sessions usually do not have nvm on `PATH`:
+
+```text
+restrict,command="/Users/you/.nvm/versions/node/v22.0.0/bin/node /Users/you/.nvm/versions/node/v22.0.0/lib/node_modules/teams-api/dist/ssh-wrapper.js" ssh-ed25519 AAAA... teams-bot
+```
+
+The wrapper allows only `list-conversations`, `find-conversation`, `find-one-on-one`, `get-messages`, `search-messages`, `get-members`, `get-transcript`, and `whoami`. It refuses options that bypass the cached session or write files (`--token`, `--login`, `--output`, and similar), forces `TEAMS_READ_ONLY=true`, `TEAMS_NON_INTERACTIVE=true`, and `TEAMS_TOKEN_STORE=file`, and never runs a shell. `restrict` also disables PTY allocation, so stderr never mixes into stdout. The bot then runs, for example:
+
+```bash
+ssh mac 'get-messages --conversation-id "19:abc@thread.v2" --since 24h --json'
+```
+
+Resolve each chat's conversation ID once (`find-conversation --query "..." --json` or `find-one-on-one --person-name "..." --json`) and use `--conversation-id` from then on: name lookups are partial matches.
 
 ## API regions
 

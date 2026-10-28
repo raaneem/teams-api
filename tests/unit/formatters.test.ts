@@ -43,6 +43,7 @@ function makeMockAction(
     name: "test-action",
     title: "Test Action",
     description: "A mock action for testing",
+    access: "read",
     parameters: [],
     execute: async () => ({}),
     formatConcise: (result) => `concise:${JSON.stringify(result)}`,

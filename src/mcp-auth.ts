@@ -1,5 +1,6 @@
 import { canAttemptAutoLogin as defaultCanAttemptAutoLogin } from "./platform.js";
 import { recordAuth as defaultRecordAuth } from "./telemetry.js";
+import { safeErrorMessage } from "./redact.js";
 import type {
   AuthLogFunction,
   AutoLoginOptions,
@@ -111,7 +112,7 @@ function resolveMcpAuthEnvironment(
 }
 
 function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return safeErrorMessage(error);
 }
 
 export class McpAuthManager<Client extends AuthenticatedTeamsClient> {

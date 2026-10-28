@@ -17,6 +17,9 @@
  *
  * Each line in the file is a self-contained JSON object (JSONL).
  * Clear the file manually to start fresh.
+ *
+ * Records are redacted (see src/redact.ts) and the file is created private
+ * (directory 0700, file 0600) because it holds message content.
  */
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
@@ -25,6 +28,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Platform } from "./platform.js";
 import { detectPlatform } from "./platform.js";
+import { redactSecrets } from "./redact.js";
 
 // ── Session ID ───────────────────────────────────────────────────────
 
@@ -88,13 +92,14 @@ function write(record: Record<string, unknown>): void {
       ? dirname(filePath)
       : getTelemetryDir();
     if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
     appendFileSync(
       filePath,
-      JSON.stringify({ session: getSessionId(), ts: Date.now(), ...record }) +
-        "\n",
-      "utf-8",
+      redactSecrets(
+        JSON.stringify({ session: getSessionId(), ts: Date.now(), ...record }),
+      ) + "\n",
+      { encoding: "utf-8", mode: 0o600 },
     );
   } catch {
     // Telemetry failures must never surface to the user

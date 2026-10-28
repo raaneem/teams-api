@@ -14,10 +14,16 @@ import {
   conversationParameters,
   resolveConversationId,
 } from "./conversation-resolution.js";
+import {
+  attachResultContext,
+  getResultContext,
+  memberToJson,
+} from "./json-output.js";
 
 export const getMembers: ActionDefinition = {
   name: "get-members",
   title: "Get Conversation Members",
+  access: "read",
   description:
     "List members of a conversation. " +
     "Identify the conversation by topic name (--chat), " +
@@ -27,8 +33,15 @@ export const getMembers: ActionDefinition = {
     "Note: 1:1 chat members may have empty display names if profile resolution is unavailable.",
   parameters: [...conversationParameters],
   execute: async (client, parameters) => {
-    const { conversationId } = await resolveConversationId(client, parameters);
-    return client.getMembers(conversationId);
+    const { conversationId, label } = await resolveConversationId(
+      client,
+      parameters,
+    );
+    const members = await client.getMembers(conversationId);
+    return attachResultContext(members, {
+      conversationId,
+      conversationLabel: label,
+    });
   },
   formatConcise: (result) => {
     const members = result as Member[];
@@ -59,11 +72,24 @@ export const getMembers: ActionDefinition = {
     }
     return lines.join("\n");
   },
+  formatJson: (result) => {
+    const context = getResultContext(result);
+    const members = result as Member[];
+    return {
+      data: members.map(memberToJson),
+      meta: {
+        conversationId: context.conversationId ?? null,
+        conversationLabel: context.conversationLabel ?? null,
+        count: members.length,
+      },
+    };
+  },
 };
 
 export const whoami: ActionDefinition = {
   name: "whoami",
   title: "Current User Info",
+  access: "read",
   description:
     "Get the display name and region of the currently authenticated user.",
   parameters: [],
@@ -84,6 +110,7 @@ export const whoami: ActionDefinition = {
 export const getTranscript: ActionDefinition = {
   name: "get-transcript",
   title: "Get Meeting Transcript",
+  access: "read",
   description:
     "Get the meeting transcript from a conversation that contains a recorded meeting. " +
     "Identify the conversation by topic name (--chat), " +
@@ -101,16 +128,23 @@ export const getTranscript: ActionDefinition = {
     },
   ],
   execute: async (client, parameters) => {
-    const { conversationId } = await resolveConversationId(client, parameters);
+    const { conversationId, label } = await resolveConversationId(
+      client,
+      parameters,
+    );
     const rawVtt = (parameters.rawVtt as boolean | undefined) ?? false;
 
     const transcriptResult = await client.getTranscript(conversationId);
+    const context = { conversationId, conversationLabel: label };
 
     if (rawVtt) {
-      return { rawVtt: transcriptResult.rawVtt, format: "vtt" as const };
+      return attachResultContext(
+        { rawVtt: transcriptResult.rawVtt, format: "vtt" as const },
+        context,
+      );
     }
 
-    return transcriptResult;
+    return attachResultContext(transcriptResult, context);
   },
   formatConcise: (result) => {
     const data = result as TranscriptResult | { rawVtt: string; format: "vtt" };
@@ -135,5 +169,24 @@ export const getTranscript: ActionDefinition = {
     }
 
     return lines.join("\n");
+  },
+  formatJson: (result) => {
+    const context = getResultContext(result);
+    const meta = {
+      conversationId: context.conversationId ?? null,
+      conversationLabel: context.conversationLabel ?? null,
+    };
+    const data = result as TranscriptResult | { rawVtt: string; format: "vtt" };
+    if ("format" in data && data.format === "vtt") {
+      return { data: { rawVtt: data.rawVtt }, meta };
+    }
+    const transcript = data as TranscriptResult;
+    return {
+      data: {
+        meetingTitle: transcript.meetingTitle,
+        entries: transcript.entries,
+      },
+      meta,
+    };
   },
 };

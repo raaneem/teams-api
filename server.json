@@ -107,6 +107,24 @@
           "description": "OpenAI-compatible base URL for teams_describe_image",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "TEAMS_READ_ONLY",
+          "description": "Set to \"true\" to expose only tools that read Teams; writes are refused",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "TEAMS_TOKEN_STORE",
+          "description": "Token cache: auto (platform store with a private file fallback), system, or file",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "TEAMS_NON_INTERACTIVE",
+          "description": "Set to \"true\" to fail fast instead of waiting for someone to sign in",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

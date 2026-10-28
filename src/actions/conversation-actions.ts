@@ -6,10 +6,12 @@
 
 import type { Conversation, OneOnOneSearchResult } from "../types.js";
 import type { ActionDefinition } from "./formatters.js";
+import { conversationToJson } from "./json-output.js";
 
 export const listConversations: ActionDefinition = {
   name: "list-conversations",
   title: "List Teams Conversations",
+  access: "read",
   description:
     "List conversations (chats, group chats, meetings, channels). " +
     "Returns conversation ID, topic, type, and last message time.",
@@ -42,11 +44,19 @@ export const listConversations: ActionDefinition = {
     }
     return lines.join("\n");
   },
+  formatJson: (result) => {
+    const conversations = result as Conversation[];
+    return {
+      data: conversations.map(conversationToJson),
+      meta: { count: conversations.length },
+    };
+  },
 };
 
 export const findConversation: ActionDefinition = {
   name: "find-conversation",
   title: "Find Teams Conversation",
+  access: "read",
   description:
     "Find a conversation by topic name (case-insensitive partial match). " +
     "When Substrate search is available, also matches by member names. " +
@@ -80,11 +90,15 @@ export const findConversation: ActionDefinition = {
     }
     return lines.join("\n");
   },
+  formatJson: (result) => ({
+    data: result ? conversationToJson(result as Conversation) : null,
+  }),
 };
 
 export const findOneOnOne: ActionDefinition = {
   name: "find-one-on-one",
   title: "Find 1:1 Conversation",
+  access: "read",
   description:
     "Find or create a 1:1 conversation with a person by name. " +
     "Uses Substrate people/chat search when available — if a conversation " +
@@ -113,5 +127,16 @@ export const findOneOnOne: ActionDefinition = {
       "",
       `- **Conversation ID:** ${searchResult.conversationId}`,
     ].join("\n");
+  },
+  formatJson: (result) => {
+    const searchResult = result as OneOnOneSearchResult | null;
+    return {
+      data: searchResult
+        ? {
+            conversationId: searchResult.conversationId,
+            name: searchResult.memberDisplayName,
+          }
+        : null,
+    };
   },
 };

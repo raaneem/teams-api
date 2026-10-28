@@ -4,11 +4,18 @@
  * Opens a visible Chromium window (Playwright's bundled browser),
  * navigates to Teams, and waits for the user to complete login manually.
  * Works on all platforms (macOS, Windows, Linux).
+ *
+ * With TEAMS_NON_INTERACTIVE=true (unattended use, e.g. over SSH), the saved
+ * browser session may still renew tokens silently, but login fails fast with
+ * AuthRequiredError instead of waiting for a person.
  */
 
 import type { TeamsToken, InteractiveLoginOptions } from "../types.js";
 import { resolveTeamsRegion } from "../region.js";
 import { diagnosePageState } from "./page-diagnostics.js";
+import { AuthRequiredError } from "../errors.js";
+import { redactUrl } from "../redact.js";
+import { isNonInteractiveMode } from "../runtime-flags.js";
 import {
   launchInteractiveBrowserContext,
   getDefaultBrowserProfileDir,
@@ -22,6 +29,8 @@ import {
 
 const TEAMS_URL = "https://teams.cloud.microsoft/";
 const INTERACTIVE_LOGIN_TIMEOUT = 5 * 60 * 1_000;
+/** Long enough for a saved session to load Teams, too short to wait for a person. */
+const NON_INTERACTIVE_LOGIN_TIMEOUT = 45 * 1_000;
 
 /**
  * Acquire a Teams skype token via interactive browser login.
@@ -40,6 +49,10 @@ export async function acquireTokenViaInteractiveLogin(
   const { chromium } = await import("playwright");
   const log: LogFunction =
     options?.log ?? (options?.verbose ? console.error.bind(console) : () => {});
+  const nonInteractive = isNonInteractiveMode();
+  const loginTimeout = nonInteractive
+    ? NON_INTERACTIVE_LOGIN_TIMEOUT
+    : INTERACTIVE_LOGIN_TIMEOUT;
 
   log("Launching browser for interactive login...");
   const profileDir = getDefaultBrowserProfileDir();
@@ -60,11 +73,11 @@ export async function acquireTokenViaInteractiveLogin(
     log("Navigating to Teams...");
     await page.goto(TEAMS_URL, {
       waitUntil: "domcontentloaded",
-      timeout: INTERACTIVE_LOGIN_TIMEOUT,
+      timeout: loginTimeout,
     });
 
-    // Pre-fill email if provided
-    if (options?.email) {
+    // Pre-fill email if provided (nobody is there to use it when non-interactive)
+    if (options?.email && !nonInteractive) {
       try {
         await page.waitForURL(
           /login\.microsoftonline\.com|login\.microsoft\.com/,
@@ -88,8 +101,12 @@ export async function acquireTokenViaInteractiveLogin(
     }
 
     // Wait for user to complete login, polling page state for diagnostics
-    log("Waiting for you to complete login in the browser window...");
-    const loginDeadline = Date.now() + INTERACTIVE_LOGIN_TIMEOUT;
+    log(
+      nonInteractive
+        ? "Waiting for Teams to load from the saved browser session..."
+        : "Waiting for you to complete login in the browser window...",
+    );
+    const loginDeadline = Date.now() + loginTimeout;
     while (Date.now() < loginDeadline) {
       const state = await diagnosePageState(page);
       if (state.phase === "teams-loaded" || state.phase === "teams-loading") {
@@ -107,9 +124,16 @@ export async function acquireTokenViaInteractiveLogin(
       !page.url().includes("teams.microsoft.com")
     ) {
       const state = await diagnosePageState(page);
+      if (nonInteractive) {
+        throw new AuthRequiredError(
+          `Teams needs an interactive sign-in: the saved browser session did not reach Teams ` +
+            `within ${loginTimeout / 1_000}s (${state.detail}). ` +
+            `Run "teams-api auth" where you can see the browser window, then retry.`,
+        );
+      }
       throw new Error(
-        `Login did not complete within ${INTERACTIVE_LOGIN_TIMEOUT / 1_000}s. ` +
-          `Current state: ${state.phase} — ${state.detail} (URL: ${state.url})`,
+        `Login did not complete within ${loginTimeout / 1_000}s. ` +
+          `Current state: ${state.phase} — ${state.detail} (URL: ${redactUrl(state.url)})`,
       );
     }
 

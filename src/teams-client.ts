@@ -106,6 +106,10 @@ import { acquireTokenViaDebugSession } from "./auth/debug-session.js";
 import { acquireTokenViaSmartLogin } from "./smart-login.js";
 import { DEFAULT_TEAMS_REGION, resolveTeamsRegion } from "./region.js";
 import { saveToken, loadToken, clearToken } from "./token-store.js";
+import { registerTokenSecrets } from "./redact.js";
+import { assertWriteAllowed } from "./read-only.js";
+import { InvalidArgumentError } from "./errors.js";
+import { extractMriSuffix } from "./mri.js";
 
 const DEFAULT_ACCOUNT = "_default";
 const UNKNOWN_USER_DISPLAY_NAME = "Unknown User";
@@ -212,6 +216,9 @@ export type {
   ImageDescriptionResult,
 } from "./api/image-description.js";
 export { saveToken, loadToken, clearToken } from "./token-store.js";
+export { ReadOnlyModeError } from "./read-only.js";
+export { InvalidArgumentError, AuthRequiredError } from "./errors.js";
+export { isReadOnlyMode } from "./runtime-flags.js";
 export { actions } from "./actions/definitions.js";
 export { formatOutput } from "./actions/formatters.js";
 export type {
@@ -221,17 +228,14 @@ export type {
 } from "./actions/formatters.js";
 
 /**
- * Extract the MRI suffix from a sender URL or return the input unchanged.
- * API messages use full URLs (e.g. ".../contacts/8:orgid:uuid"),
- * while member IDs are just the MRI suffix ("8:orgid:uuid").
+ * Creation instant of a message in epoch milliseconds.
+ * Falls back to the message ID, which is the server arrival time in milliseconds.
  */
-function extractMriSuffix(senderMri: string): string {
-  const contactsPrefix = "/contacts/";
-  const contactsIndex = senderMri.lastIndexOf(contactsPrefix);
-  if (contactsIndex >= 0) {
-    return senderMri.slice(contactsIndex + contactsPrefix.length);
-  }
-  return senderMri;
+function getMessageCreatedTime(message: Message): number | undefined {
+  const arrivalTime = Date.parse(message.originalArrivalTime);
+  if (!Number.isNaN(arrivalTime)) return arrivalTime;
+  const idTime = Number(message.id);
+  return Number.isFinite(idTime) && idTime > 0 ? idTime : undefined;
 }
 
 interface CurrentUserIdentity {
@@ -293,6 +297,7 @@ export class TeamsClient {
 
   private constructor(token: TeamsToken) {
     this.token = token;
+    registerTokenSecrets(token);
     // Fire-and-forget: pre-fetch the emoji shortcut→ID map from the Teams CDN.
     // If this completes before any reaction call, shortcuts like "horse" will
     // resolve to "1f40e_horse". If not, standard reactions still work.
@@ -335,8 +340,9 @@ export class TeamsClient {
         );
         await clearToken(options.email);
         const freshToken = await acquireTokenViaAutoLogin(options);
-        await saveToken(options.email, freshToken);
-        log("Fresh token saved to Keychain");
+        if (await saveToken(options.email, freshToken)) {
+          log("Fresh token cached");
+        }
 
         const client = new TeamsClient(freshToken);
         client.autoLoginOptions = options;
@@ -350,7 +356,7 @@ export class TeamsClient {
           ? cachedToken
           : { ...cachedToken, region };
 
-      log("Using cached token from Keychain");
+      log("Using cached token");
       if (token !== cachedToken) {
         log(`Overriding cached region with explicit value: ${region}`);
         await saveToken(options.email, token);
@@ -364,8 +370,9 @@ export class TeamsClient {
 
     log("No cached token found, acquiring via auto-login...");
     const token = await acquireTokenViaAutoLogin(options);
-    await saveToken(options.email, token);
-    log("Token saved to Keychain");
+    if (await saveToken(options.email, token)) {
+      log("Token cached");
+    }
 
     const client = new TeamsClient(token);
     client.autoLoginOptions = options;
@@ -424,13 +431,15 @@ export class TeamsClient {
 
     // Always save under the cache key (email or default account)
     const saveKey = email ?? DEFAULT_ACCOUNT;
-    await saveToken(saveKey, token);
+    const saved = await saveToken(saveKey, token);
     // Also save under default account if we used an email key, so
     // subsequent runs without --email still find the cached token
     if (email && saveKey !== DEFAULT_ACCOUNT) {
       await saveToken(DEFAULT_ACCOUNT, token);
     }
-    log("Token saved to credential store");
+    if (saved) {
+      log("Token cached");
+    }
 
     const client = new TeamsClient(token);
     client.smartLoginOptions = options ?? null;
@@ -1313,6 +1322,12 @@ export class TeamsClient {
     return this.withTokenRefresh(async () => {
       const limit = options?.limit;
       const since = options?.since;
+      const sinceTime = since === undefined ? undefined : Date.parse(since);
+      if (sinceTime !== undefined && Number.isNaN(sinceTime)) {
+        throw new InvalidArgumentError(
+          `Invalid "since" timestamp: expected ISO-8601 such as 2026-03-26T00:00:00Z`,
+        );
+      }
       const maxPages = options?.maxPages ?? 100;
       const pageSize = options?.pageSize ?? 200;
       const allMessages: Message[] = [];
@@ -1329,10 +1344,11 @@ export class TeamsClient {
         let pageMessages = result.messages;
         let reachedSinceCutoff = false;
 
-        if (since !== undefined) {
-          pageMessages = pageMessages.filter(
-            (message) => message.originalArrivalTime > since,
-          );
+        if (sinceTime !== undefined) {
+          pageMessages = pageMessages.filter((message) => {
+            const createdAt = getMessageCreatedTime(message);
+            return createdAt === undefined || createdAt > sinceTime;
+          });
           // The API returns messages newest-first. If any message on this
           // page was at or before the cutoff, all subsequent pages will be
           // older — stop paginating.
@@ -1482,6 +1498,7 @@ export class TeamsClient {
     subject?: string,
     quoteMessageId?: string,
   ): Promise<SentMessage> {
+    assertWriteAllowed("send a Teams message");
     return this.withTokenRefresh(async () => {
       const displayName = await this.getCurrentUserDisplayName();
       const quoteHtml = quoteMessageId
@@ -1539,6 +1556,7 @@ export class TeamsClient {
     format: MessageFormat = "markdown",
     quoteMessageId?: string,
   ): Promise<EditedMessage> {
+    assertWriteAllowed("edit a Teams message");
     return this.withTokenRefresh(async () => {
       const displayName = await this.getCurrentUserDisplayName();
       const quoteHtml = quoteMessageId
@@ -1588,6 +1606,7 @@ export class TeamsClient {
     conversationId: string,
     messageId: string,
   ): Promise<DeletedMessage> {
+    assertWriteAllowed("delete a Teams message");
     return this.withTokenRefresh(async () => {
       return deleteMessage(this.token, conversationId, messageId);
     });
@@ -1605,6 +1624,7 @@ export class TeamsClient {
     messageId: string,
     reactionKey: string,
   ): Promise<ReactionResult> {
+    assertWriteAllowed("add a reaction");
     await initializeEmojiMap();
     const resolvedKey = resolveReactionKey(reactionKey);
     return this.withTokenRefresh(async () => {
@@ -1624,6 +1644,7 @@ export class TeamsClient {
     messageId: string,
     reactionKey: string,
   ): Promise<ReactionResult> {
+    assertWriteAllowed("remove a reaction");
     await initializeEmojiMap();
     const resolvedKey = resolveReactionKey(reactionKey);
     return this.withTokenRefresh(async () => {
@@ -1647,6 +1668,7 @@ export class TeamsClient {
     amsReferences: string[] = [],
     subject?: string,
   ): Promise<ScheduledMessage> {
+    assertWriteAllowed("schedule a Teams message");
     return this.withTokenRefresh(async () => {
       const displayName = await this.getCurrentUserDisplayName();
       return postScheduledMessage(
@@ -1723,6 +1745,7 @@ export class TeamsClient {
     contentParts: MessageContentPart[],
     subject?: string,
   ): Promise<SentMessage> {
+    assertWriteAllowed("send a Teams message with images");
     return this.withTokenRefresh(async () => {
       const amsReferences: string[] = [];
       const htmlParts: string[] = [];
@@ -1790,6 +1813,7 @@ export class TeamsClient {
     fileSharingScope: FileSharingScope = "chat",
     subject?: string,
   ): Promise<SentMessage> {
+    assertWriteAllowed("send a Teams message with files");
     return this.withTokenRefresh(async () => {
       if (!this.userEmail) {
         throw new Error(
@@ -2095,6 +2119,7 @@ export class TeamsClient {
         await saveToken(DEFAULT_ACCOUNT, freshToken);
       }
       this.token = freshToken;
+      registerTokenSecrets(freshToken);
       this.cachedDisplayName = null;
       this.cachedUserPrincipalName = null;
       return;
@@ -2110,6 +2135,7 @@ export class TeamsClient {
     const freshToken = await acquireTokenViaAutoLogin(this.autoLoginOptions);
     await saveToken(this.autoLoginOptions.email, freshToken);
     this.token = freshToken;
+    registerTokenSecrets(freshToken);
     this.cachedDisplayName = null;
     this.cachedUserPrincipalName = null;
   }

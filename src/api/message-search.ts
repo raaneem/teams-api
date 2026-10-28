@@ -6,6 +6,7 @@ import type {
   MessageSearchPage,
 } from "../types.js";
 import { ApiAuthError, fetchWithRetry } from "./common.js";
+import { buildTeamsMessageLink } from "../teams-links.js";
 
 const SEARCH_EXTENSION_PREFIX = "SkypeSpaces_ConversationPost_Extension_";
 const SEARCH_EXTENSION_FIELDS = [
@@ -178,7 +179,7 @@ export async function searchMessages(
         undefined;
       const webUrl =
         messageId && conversationId
-          ? `https://teams.microsoft.com/l/message/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}${parentMessageId ? `?parentMessageId=${encodeURIComponent(parentMessageId)}` : ""}`
+          ? buildTeamsMessageLink(conversationId, messageId, parentMessageId)
           : undefined;
       return {
         id: result.Id,

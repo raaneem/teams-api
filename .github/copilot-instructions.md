@@ -14,7 +14,9 @@ Teams uses **two independent tokens** captured during a single CDP Fetch interce
 | Skype token  | `Authentication: skypetoken=<token>` | Chat Service (`{region}.ng.msg.teams.microsoft.com`) | Messages, threads, members, conversations                                |
 | Bearer token | `Authorization: Bearer <token>`      | `api.spaces.skype.com` (MSAL)                        | Middle-tier APIs on `teams.cloud.microsoft` (profiles, presence, search) |
 
-These tokens **cannot** be derived from each other. Both are captured in all three auth strategies and persisted together in the macOS Keychain via `src/token-store.ts`.
+These tokens **cannot** be derived from each other. Both are captured in all three auth strategies and persisted together via `src/token-store.ts`: in the platform credential store (macOS Keychain), falling back to the private file cache in `~/.teams-api/tokens` when that store refuses the write.
+
+Never print, log, or return tokens. Route any new output or error path through `src/redact.ts`, and classify every new action with `access` (`read`, `write`, or `external`) so read-only mode can enforce it.
 
 If you discover a new endpoint that requires a different token or audience, update the CDP Fetch interception in `src/auth/token-capture.ts`.
 

@@ -15,7 +15,8 @@
   "types": "dist/teams-client.d.ts",
   "bin": {
     "teams-api": "dist/cli.js",
-    "teams-api-mcp": "dist/mcp-server.js"
+    "teams-api-mcp": "dist/mcp-server.js",
+    "teams-api-ssh": "dist/ssh-wrapper.js"
   },
   "files": [
     "dist",
