@@ -38,6 +38,7 @@ When the platform store refuses a write — for example the locked login Keychai
 - Tokens are never printed. Errors, logs, MCP results, and telemetry pass through `src/redact.ts`, which removes every token `teams-api` holds and anything shaped like a credential. `teams-api auth` reports which tokens are cached; only `--print-token` prints them, and read-only mode refuses it.
 - `TEAMS_READ_ONLY=true` refuses every request that could change Teams, at the action, client, and HTTP layers.
 - Avoid `--token`, `--bearer-token`, and `--substrate-token` on shared machines: command-line arguments are visible to other processes. Prefer the cache or environment variables.
+- `teams-api-mcp --http` requires a bearer token on every request, refuses browser requests (any `Origin` header), is read-only unless started with `--allow-writes`, and listens on `127.0.0.1` by default. Anyone with the token can read Teams as you, so store it only in the MCP client that needs it.
 
 ### Migrating from the old DPAPI storage
 

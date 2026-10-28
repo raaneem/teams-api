@@ -438,6 +438,54 @@ Use this only if you already have tokens from another flow or need to avoid brow
 > [!TIP]
 > If you do use direct tokens, `teams-api auth --login --print-token` prints the full token object as JSON (plain `teams-api auth` only reports which tokens are cached). Treat the output like a password. For basic chat operations, `skypeToken` is enough. For reliable people/chat/channel search and profile resolution, also pass `bearerToken` and `substrateToken`.
 
+### Connecting by URL (HTTP)
+
+Some MCP clients connect to a URL instead of starting a process, for example apps that run in Docker. Run the server in HTTP mode on the computer where you sign in to Teams:
+
+```bash
+teams-api-mcp --http               # serves http://127.0.0.1:8787/mcp
+teams-api-mcp --print-http-token   # the token your MCP client needs
+```
+
+- Every request needs `Authorization: Bearer <token>`. The token is created on first use and stored in `~/.teams-api/tokens` (file `0600`). Set `TEAMS_MCP_HTTP_TOKEN` (32+ characters) to choose your own.
+- HTTP mode is read-only unless you pass `--allow-writes`. `TEAMS_READ_ONLY=true` always wins.
+- Requests that carry an `Origin` header (browsers) are refused.
+- It listens on `127.0.0.1` by default (`--host` and `--port` change that). Docker Desktop and OrbStack containers reach it at `http://host.docker.internal:8787/mcp`. Binding another address exposes Teams to that network; only do so behind a firewall you control.
+
+In your MCP client, add a **Streamable HTTP** server with that URL and the header `Authorization: Bearer <token>`.
+
+To keep it running on macOS, use a LaunchAgent, so it starts at login and runs in your session (where the browser can open to renew tokens). Save this as `~/Library/LaunchAgents/com.teams-api.mcp-http.plist`, with absolute paths for your Node.js install:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.teams-api.mcp-http</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/you/.nvm/versions/node/v22.0.0/bin/node</string>
+      <string>/Users/you/.nvm/versions/node/v22.0.0/lib/node_modules/teams-api/dist/mcp-server.js</string>
+      <string>--http</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>TEAMS_TOKEN_STORE</key>
+      <string>file</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Users/you/Library/Logs/teams-api-mcp-http.log</string>
+  </dict>
+</plist>
+```
+
+Then load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.teams-api.mcp-http.plist`. `TEAMS_TOKEN_STORE=file` shares the token cache with SSH sessions (see [Unattended use](#unattended-use-bots-and-ssh)).
+
 ### Environment variables
 
 | Variable                        | Description                                                                                            |
@@ -460,6 +508,7 @@ Use this only if you already have tokens from another flow or need to avoid brow
 | `TEAMS_READ_ONLY`               | Set to `true` to expose only tools that read Teams. See [Unattended use](#unattended-use-bots-and-ssh) |
 | `TEAMS_TOKEN_STORE`             | Token cache: `auto` (default), `system`, or `file`. See [Unattended use](#unattended-use-bots-and-ssh) |
 | `TEAMS_NON_INTERACTIVE`         | Set to `true` to fail fast instead of waiting for someone to sign in                                   |
+| `TEAMS_MCP_HTTP_TOKEN`          | Bearer token for `teams-api-mcp --http` (32+ characters). Default: generated once and stored           |
 
 #### Agent marker
 

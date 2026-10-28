@@ -20,8 +20,17 @@
  *     TEAMS_READ_ONLY       — Set to "true" to expose only tools that read Teams
  *     TEAMS_TOKEN_STORE     — auto (default), system, or file (see src/token-store.ts)
  *     TEAMS_NON_INTERACTIVE — Set to "true" to fail fast instead of waiting for a person to sign in
+ *     TEAMS_MCP_HTTP_TOKEN  — Bearer token for --http (default: generated once and stored)
  *     TEAMS_TELEMETRY       — Set to "true" to enable full debug telemetry (contributor use)
  *     TEAMS_IMAGE_DESCRIPTION_API_KEY — Optional vision API key for teams_describe_image
+ *
+ * Options:
+ *   --http               Serve Streamable HTTP on http://<host>:<port>/mcp instead of stdio.
+ *                        Read-only unless --allow-writes; every request needs the bearer token.
+ *   --host <address>     HTTP listen address (default: 127.0.0.1)
+ *   --port <port>        HTTP port (default: 8787)
+ *   --allow-writes       Allow write tools over HTTP (TEAMS_READ_ONLY still wins)
+ *   --print-http-token   Print the HTTP bearer token (created on first use) and exit
  *
  * Usage in VS Code settings (mcp config):
  *   {
@@ -38,6 +47,7 @@
  */
 
 import { createRequire } from "node:module";
+import { format, parseArgs } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
@@ -57,6 +67,14 @@ import { McpAuthManager } from "./mcp-auth.js";
 import type { AuthLogFunction } from "./types.js";
 import { ReadOnlyModeError } from "./read-only.js";
 import { isReadOnlyMode } from "./runtime-flags.js";
+import { InvalidArgumentError } from "./errors.js";
+import {
+  DEFAULT_HTTP_HOST,
+  DEFAULT_HTTP_PORT,
+  MCP_HTTP_PATH,
+  loadOrCreateHttpToken,
+  startMcpHttpServer,
+} from "./mcp-http.js";
 import {
   redactKnownSecrets,
   redactSecrets,
@@ -271,10 +289,94 @@ export function createMcpServer(options: CreateMcpServerOptions = {}): {
   return { server, authManager };
 }
 
+export interface ServerArguments {
+  http: boolean;
+  host: string;
+  port: number;
+  allowWrites: boolean;
+  printHttpToken: boolean;
+}
+
+/** Parse `teams-api-mcp` options. Throws `InvalidArgumentError` on bad input. */
+export function parseServerArguments(argv: string[]): ServerArguments {
+  let values;
+  try {
+    ({ values } = parseArgs({
+      args: argv,
+      options: {
+        http: { type: "boolean", default: false },
+        host: { type: "string", default: DEFAULT_HTTP_HOST },
+        port: { type: "string", default: String(DEFAULT_HTTP_PORT) },
+        "allow-writes": { type: "boolean", default: false },
+        "print-http-token": { type: "boolean", default: false },
+      },
+      strict: true,
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    throw new InvalidArgumentError(safeErrorMessage(error));
+  }
+
+  const port = Number(values.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new InvalidArgumentError(`Invalid --port "${values.port}"`);
+  }
+  return {
+    http: values.http,
+    host: values.host,
+    port,
+    allowWrites: values["allow-writes"],
+    printHttpToken: values["print-http-token"],
+  };
+}
+
+function logToStderr(...messages: unknown[]): void {
+  process.stderr.write(`${redactSecrets(format(...messages))}\n`);
+}
+
+async function serveHttp(options: ServerArguments): Promise<void> {
+  // Anything that can reach the port could otherwise send messages.
+  if (!options.allowWrites) {
+    process.env.TEAMS_READ_ONLY = "true";
+  }
+  const token = await loadOrCreateHttpToken();
+  registerSecret(token);
+
+  const readOnly = isReadOnlyMode();
+  const authManager = new McpAuthManager<TeamsClient>({
+    clientFactory: TeamsClient,
+    log: logToStderr,
+  });
+  await startMcpHttpServer({
+    host: options.host,
+    port: options.port,
+    token,
+    createMcpServer: () => createMcpServer({ authManager, readOnly }).server,
+    log: logToStderr,
+  });
+  logToStderr(
+    `teams-api MCP server listening on http://${options.host}:${options.port}${MCP_HTTP_PATH} ` +
+      `(${readOnly ? "read-only" : "read and write"}; bearer token required)`,
+  );
+}
+
 async function main() {
+  const options = parseServerArguments(process.argv.slice(2));
+
+  if (options.printHttpToken) {
+    // The HTTP access token, which the user pastes into their MCP client.
+    process.stdout.write(`${await loadOrCreateHttpToken()}\n`);
+    return;
+  }
+
   registerSecret(process.env.TEAMS_TOKEN);
   registerSecret(process.env.TEAMS_BEARER_TOKEN);
   registerSecret(process.env.TEAMS_SUBSTRATE_TOKEN);
+
+  if (options.http) {
+    await serveHttp(options);
+    return;
+  }
 
   const { server, authManager } = createMcpServer();
   const transport = new StdioServerTransport();
@@ -284,7 +386,7 @@ async function main() {
 
 function exitWithRedactedError(error: unknown): void {
   console.error("MCP server error:", safeErrorMessage(error));
-  process.exit(1);
+  process.exit(error instanceof InvalidArgumentError ? 2 : 1);
 }
 
 const isMainModule =
