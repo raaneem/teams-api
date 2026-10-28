@@ -33,6 +33,7 @@ vi.mock("../../src/emoji-map.js", () => ({
 }));
 
 import { runCli } from "../../src/cli.js";
+import { acquireTokenViaInteractiveLogin } from "../../src/auth/interactive.js";
 import { resetTokenStoreState } from "../../src/token-store.js";
 
 const cachedToken = {
@@ -465,6 +466,30 @@ describe("auth", () => {
       },
     });
     expectNoSecrets();
+  });
+});
+
+describe("auth --refresh", () => {
+  it("refreshes from the browser session and still prints no tokens", async () => {
+    simulateLockedKeychain(encodedCachedToken());
+    const freshToken = {
+      skypeToken: "CANARY-FRESH-SKYPE-TOKEN-0123456789abcdef",
+      region: "apac",
+    };
+    vi.mocked(acquireTokenViaInteractiveLogin).mockResolvedValueOnce(
+      freshToken,
+    );
+
+    const exitCode = await run("auth", "--refresh");
+
+    expect(exitCode).toBe(0);
+    expect(acquireTokenViaInteractiveLogin).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      authenticated: true,
+      tokens: { skype: { present: true } },
+    });
+    expectNoSecrets();
+    expect(allOutput()).not.toContain(freshToken.skypeToken);
   });
 });
 

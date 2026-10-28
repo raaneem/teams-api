@@ -450,6 +450,7 @@ teams-api-mcp --print-http-token   # the token your MCP client needs
 - Every request needs `Authorization: Bearer <token>`. The token is created on first use and stored in `~/.teams-api/tokens` (file `0600`). Set `TEAMS_MCP_HTTP_TOKEN` (32+ characters) to choose your own.
 - HTTP mode is read-only unless you pass `--allow-writes`. `TEAMS_READ_ONLY=true` always wins.
 - Requests that carry an `Origin` header (browsers) are refused.
+- It keeps the cached sign-in fresh: about 45 minutes before the sign-in expires (`--refresh-margin` changes that), it loads Teams in the saved browser profile for a few seconds and saves the new tokens. If Teams hands back the same sign-in, it tries again right after expiry; if Microsoft needs you to sign in again, it retries every 2 hours. `--no-auto-refresh` turns this off. The short-lived search token is still refreshed on demand.
 - It listens on `127.0.0.1` by default (`--host` and `--port` change that). Docker Desktop and OrbStack containers reach it at `http://host.docker.internal:8787/mcp`. Binding another address exposes Teams to that network; only do so behind a firewall you control.
 
 In your MCP client, add a **Streamable HTTP** server with that URL and the header `Authorization: Bearer <token>`.
@@ -693,7 +694,7 @@ teams-api describe-image --ams-object-id 0-eaua-d2-877b82634f4e978692f2243d445a6
 
 `get-messages --since` accepts an ISO-8601 time with a timezone (`2026-10-28T09:30:00Z`, `2026-10-28T14:30:00+05:00`), a date (`2026-10-28`, midnight UTC), or a duration before now (`90m`, `24h`, `7d`). Anything else is rejected rather than guessed. For incremental polling, pass the previous run's `meta.newestCreatedAt`.
 
-Tokens are renewed by loading Teams in the saved browser profile, so no password is stored, but a browser window briefly opens on the computer's screen. With `TEAMS_NON_INTERACTIVE=true`, renewal gives up after 45 seconds with exit code 3 instead of waiting for someone to sign in. Run `teams-api auth` at the computer when that happens.
+Tokens are renewed by loading Teams in the saved browser profile, so no password is stored, but a browser window briefly opens on the computer's screen. With `TEAMS_NON_INTERACTIVE=true`, renewal gives up after 45 seconds with exit code 3 instead of waiting for someone to sign in. Run `teams-api auth` at the computer when that happens. `teams-api auth --refresh` renews the sign-in on demand, for example from a scheduled job; `teams-api-mcp --http` does this automatically (see [Connecting by URL](#connecting-by-url-http)).
 
 ### Locking a bot's SSH key to read-only commands
 

@@ -185,6 +185,8 @@ describe("parseServerArguments", () => {
       port: 8787,
       allowWrites: false,
       printHttpToken: false,
+      autoRefresh: true,
+      refreshMarginMs: 45 * 60 * 1_000,
     });
   });
 
@@ -194,10 +196,24 @@ describe("parseServerArguments", () => {
     ).toMatchObject({ http: true, port: 9000, host: "0.0.0.0" });
   });
 
-  it.each([["--port", "0"], ["--port", "http"], ["--htpp"]])(
-    "rejects %s",
-    (...argv) => {
-      expect(() => parseServerArguments(argv)).toThrow();
-    },
-  );
+  it("parses refresh options", () => {
+    expect(
+      parseServerArguments(["--http", "--refresh-margin", "2h"]),
+    ).toMatchObject({
+      autoRefresh: true,
+      refreshMarginMs: 2 * 60 * 60 * 1_000,
+    });
+    expect(parseServerArguments(["--http", "--no-auto-refresh"])).toMatchObject(
+      { autoRefresh: false },
+    );
+  });
+
+  it.each([
+    ["--port", "0"],
+    ["--port", "http"],
+    ["--htpp"],
+    ["--refresh-margin", "soon"],
+  ])("rejects %s", (...argv) => {
+    expect(() => parseServerArguments(argv)).toThrow();
+  });
 });
