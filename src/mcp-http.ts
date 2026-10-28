@@ -10,9 +10,13 @@
  *   cannot drive the server even through DNS rebinding.
  * - The server is stateless: each POST gets its own MCP server instance, and
  *   all instances share one authenticated Teams client.
+ * - Files fetched with `teams_download_file` get a short-lived link under
+ *   `/files/` (see `FileShare`), so a client that cannot receive images in
+ *   tool results can open them in its own browser or computer instead.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createReadStream, statSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -35,6 +39,101 @@ const MINIMUM_TOKEN_LENGTH = 32;
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 8787;
 export const MCP_HTTP_PATH = "/mcp";
+const FILES_PATH_PREFIX = "/files/";
+export const FILE_LINK_TTL_MS = 60 * 60 * 1_000;
+
+/** Types a browser may show inline; everything else is sent as a download. */
+const INLINE_CONTENT_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "application/pdf",
+  "text/plain",
+]);
+
+interface SharedFile {
+  path: string;
+  fileName: string;
+  contentType: string;
+  expiresAt: number;
+}
+
+/**
+ * Short-lived links to files the server downloaded from Teams.
+ *
+ * Each link carries 128 random bits and expires after FILE_LINK_TTL_MS. It
+ * grants that one file only, and needs no bearer token, so a browser can open
+ * it. Links appear only in tool results, so only the caller learns them.
+ */
+export class FileShare {
+  private readonly files = new Map<string, SharedFile>();
+
+  constructor(
+    private readonly baseUrl: string,
+    private readonly ttlMs: number = FILE_LINK_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Register a saved file and return its link. */
+  share(file: { path: string; fileName: string; contentType: string }): string {
+    this.prune();
+    const id = randomBytes(16).toString("base64url");
+    this.files.set(id, { ...file, expiresAt: this.now() + this.ttlMs });
+    return `${this.baseUrl.replace(/\/+$/, "")}${FILES_PATH_PREFIX}${id}/${encodeURIComponent(file.fileName)}`;
+  }
+
+  resolve(id: string): SharedFile | undefined {
+    this.prune();
+    return this.files.get(id);
+  }
+
+  private prune(): void {
+    const now = this.now();
+    for (const [id, file] of this.files) {
+      if (file.expiresAt <= now) this.files.delete(id);
+    }
+  }
+}
+
+function serveSharedFile(
+  request: IncomingMessage,
+  response: ServerResponse,
+  file: SharedFile | undefined,
+): void {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.setHeader("Allow", "GET, HEAD");
+    sendError(response, 405, "Method not allowed");
+    return;
+  }
+  let size: number;
+  try {
+    size = file ? statSync(file.path).size : -1;
+  } catch {
+    size = -1;
+  }
+  if (!file || size < 0) {
+    sendError(response, 404, "Link expired or not found");
+    return;
+  }
+
+  const contentType = file.contentType.toLowerCase().split(";")[0].trim();
+  const inline = INLINE_CONTENT_TYPES.has(contentType);
+  response.writeHead(200, {
+    "Content-Type": inline ? contentType : "application/octet-stream",
+    "Content-Length": size,
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+  });
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  createReadStream(file.path).pipe(response);
+}
 
 /**
  * The bearer token clients must send. `TEAMS_MCP_HTTP_TOKEN` overrides it;
@@ -69,6 +168,8 @@ export interface McpHttpServerOptions {
   token: string;
   /** Build a fresh MCP server for one request. */
   createMcpServer: () => McpServer;
+  /** Serves links created by `teams_download_file`. */
+  fileShare?: FileShare;
   log?: (message: string) => void;
 }
 
@@ -107,6 +208,11 @@ export function startMcpHttpServer(
     response: ServerResponse,
   ): Promise<void> {
     const { pathname } = new URL(request.url ?? "/", "http://localhost");
+    if (options.fileShare && pathname.startsWith(FILES_PATH_PREFIX)) {
+      const id = pathname.slice(FILES_PATH_PREFIX.length).split("/")[0];
+      serveSharedFile(request, response, options.fileShare.resolve(id));
+      return;
+    }
     if (pathname !== MCP_HTTP_PATH) {
       sendError(response, 404, "Not found");
       return;

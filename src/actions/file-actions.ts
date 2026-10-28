@@ -124,13 +124,18 @@ export const downloadFileAction: ActionDefinition = {
     return results;
   },
   formatConcise: (result) => {
-    const downloads = result as DownloadResult[];
+    const downloads = result as Array<DownloadResult & { url?: string }>;
     const lines = [`## Downloaded ${downloads.length} file(s)`, ""];
     for (const download of downloads) {
       lines.push(
         `- **${download.fileName}** (${download.fileType}, ${download.size} bytes, ${download.contentType})`,
       );
       lines.push(`  - Saved to: \`${download.savedTo}\``);
+      if (download.url) {
+        lines.push(
+          `  - Link (valid for 1 hour): ${download.url} — open it in a browser, or download it, to view the file`,
+        );
+      }
     }
     return lines.join("\n");
   },

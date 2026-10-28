@@ -30,6 +30,8 @@
  *   --host <address>     HTTP listen address (default: 127.0.0.1)
  *   --port <port>        HTTP port (default: 8787)
  *   --allow-writes       Allow write tools over HTTP (TEAMS_READ_ONLY still wins)
+ *   --public-url <url>   With --http, base URL clients use to reach this server, for links to
+ *                        downloaded files (default: http://host.docker.internal:<port>)
  *   --refresh-margin <d> With --http, refresh the cached sign-in this long before it
  *                        expires (default: 45m)
  *   --no-auto-refresh    With --http, do not refresh the sign-in in the background
@@ -84,6 +86,7 @@ import { InvalidArgumentError } from "./errors.js";
 import {
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
+  FileShare,
   MCP_HTTP_PATH,
   loadOrCreateHttpToken,
   startMcpHttpServer,
@@ -167,6 +170,8 @@ export interface CreateMcpServerOptions {
   authManager?: TeamsClientProvider;
   /** Defaults to `TEAMS_READ_ONLY`. */
   readOnly?: boolean;
+  /** HTTP mode: gives downloaded files a short-lived link. */
+  fileShare?: FileShare;
 }
 
 /** Build the MCP server with one tool per action. */
@@ -251,7 +256,10 @@ export function createMcpServer(options: CreateMcpServerOptions = {}): {
 
           const outputResult =
             action.name === "download-file" && Array.isArray(result)
-              ? createDownloadOutputResults(result as DownloadResult[])
+              ? createDownloadOutputResults(
+                  result as DownloadResult[],
+                  options.fileShare,
+                )
               : result;
           const output = redactKnownSecrets(
             formatOutput(action, outputResult, outputFormat),
@@ -310,6 +318,8 @@ export interface ServerArguments {
   printHttpToken: boolean;
   autoRefresh: boolean;
   refreshMarginMs: number;
+  /** Base URL clients use to reach this server, for file links. */
+  publicUrl: string;
 }
 
 /** Parse `teams-api-mcp` options. Throws `InvalidArgumentError` on bad input. */
@@ -324,6 +334,7 @@ export function parseServerArguments(argv: string[]): ServerArguments {
         port: { type: "string", default: String(DEFAULT_HTTP_PORT) },
         "allow-writes": { type: "boolean", default: false },
         "print-http-token": { type: "boolean", default: false },
+        "public-url": { type: "string" },
         "refresh-margin": { type: "string" },
         "no-auto-refresh": { type: "boolean", default: false },
       },
@@ -345,6 +356,7 @@ export function parseServerArguments(argv: string[]): ServerArguments {
     allowWrites: values["allow-writes"],
     printHttpToken: values["print-http-token"],
     autoRefresh: !values["no-auto-refresh"],
+    publicUrl: values["public-url"] ?? `http://host.docker.internal:${port}`,
     refreshMarginMs:
       values["refresh-margin"] === undefined
         ? DEFAULT_REFRESH_MARGIN_MS
@@ -369,11 +381,14 @@ async function serveHttp(options: ServerArguments): Promise<void> {
     clientFactory: TeamsClient,
     log: logToStderr,
   });
+  const fileShare = new FileShare(options.publicUrl);
   await startMcpHttpServer({
     host: options.host,
     port: options.port,
     token,
-    createMcpServer: () => createMcpServer({ authManager, readOnly }).server,
+    createMcpServer: () =>
+      createMcpServer({ authManager, readOnly, fileShare }).server,
+    fileShare,
     log: logToStderr,
   });
   logToStderr(

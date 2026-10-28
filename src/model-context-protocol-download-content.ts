@@ -86,11 +86,31 @@ export function buildDownloadContentBlocks(
   return contentBlocks;
 }
 
+/**
+ * Download results without the file bytes. With a `fileShare` (HTTP mode),
+ * each result also gets a short-lived `url` the client can open itself.
+ */
 export function createDownloadOutputResults(
   downloads: DownloadResult[],
-): Array<Omit<DownloadResult, "data"> & { byteLength: number }> {
+  fileShare?: {
+    share(file: {
+      path: string;
+      fileName: string;
+      contentType: string;
+    }): string;
+  },
+): Array<Omit<DownloadResult, "data"> & { byteLength: number; url?: string }> {
   return downloads.map(({ data, ...download }) => ({
     ...download,
     byteLength: data.byteLength,
+    ...(fileShare
+      ? {
+          url: fileShare.share({
+            path: download.savedTo,
+            fileName: download.fileName,
+            contentType: download.contentType,
+          }),
+        }
+      : {}),
   }));
 }
