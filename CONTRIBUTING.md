@@ -61,7 +61,8 @@ src/
   smart-login.ts        Smart login — auto-login with interactive fallback
   browser-runtime.ts    Installed-browser detection and Playwright launch helpers
   cli.ts                Commander-based CLI (driven by actions/definitions)
-  mcp-server.ts         MCP server with stdio transport
+  mcp-server.ts         MCP server with stdio transport (and --http)
+  mcp-http.ts           Streamable HTTP transport with bearer-token auth for --http
   ssh-wrapper.ts        teams-api-ssh: forced-command wrapper for read-only bot access over SSH
   server-instructions.ts  MCP server instructions and CLI guide content
   api/
