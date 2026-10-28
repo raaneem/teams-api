@@ -63,6 +63,7 @@ src/
   cli.ts                Commander-based CLI (driven by actions/definitions)
   mcp-server.ts         MCP server with stdio transport (and --http)
   mcp-http.ts           Streamable HTTP transport with bearer-token auth for --http
+  token-refresher.ts    Background refresh of the cached sign-in for --http
   ssh-wrapper.ts        teams-api-ssh: forced-command wrapper for read-only bot access over SSH
   server-instructions.ts  MCP server instructions and CLI guide content
   api/

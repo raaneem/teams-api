@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseSinceTimestamp } from "../../src/since.js";
+import { parseDurationMs, parseSinceTimestamp } from "../../src/since.js";
 import { InvalidArgumentError } from "../../src/errors.js";
 
 const now = Date.parse("2026-10-28T12:00:00.000Z");
@@ -34,5 +34,19 @@ describe("parseSinceTimestamp", () => {
     "-1h",
   ])("rejects %j instead of guessing", (input) => {
     expect(() => parseSinceTimestamp(input, now)).toThrow(InvalidArgumentError);
+  });
+});
+
+describe("parseDurationMs", () => {
+  it.each([
+    ["45m", 45 * 60 * 1_000],
+    ["2h", 2 * 60 * 60 * 1_000],
+    ["1d", 24 * 60 * 60 * 1_000],
+  ])("parses %s", (input, expected) => {
+    expect(parseDurationMs(input)).toBe(expected);
+  });
+
+  it.each(["", "45", "45 minutes", "-1h"])("rejects %j", (input) => {
+    expect(() => parseDurationMs(input)).toThrow(InvalidArgumentError);
   });
 });

@@ -34,6 +34,9 @@ import { resolveTokenStoreMode } from "./runtime-flags.js";
 const TOKEN_LIFETIME = 23 * 60 * 60 * 1_000; // 23 hours (tokens last ~24h, 1h safety margin)
 const JWT_EXPIRY_MARGIN = 5 * 60 * 1_000;
 
+/** Cache key used when no email is known (see `TeamsClient.connect`). */
+export const DEFAULT_TOKEN_ACCOUNT = "_default";
+
 interface StoredToken {
   skypeToken: string;
   region: string;
@@ -86,19 +89,38 @@ export function resetTokenStoreState(): void {
   emittedWarnings.clear();
 }
 
-/** True when the token is a JWT whose `exp` claim is (almost) reached. */
-function isJwtExpired(token: string): boolean {
+/** The `exp` claim of a JWT in epoch milliseconds, or undefined if it has none. */
+function jwtExpiry(token: string | undefined): number | undefined {
+  if (!token) return undefined;
   try {
     const payload = JSON.parse(
-      Buffer.from(token.split(".")[1], "base64url").toString("utf-8"),
-    ) as { exp?: number };
-    return (
-      typeof payload.exp === "number" &&
-      payload.exp * 1_000 - Date.now() < JWT_EXPIRY_MARGIN
-    );
+      Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf-8"),
+    ) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp * 1_000 : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * When a token bundle stops working for chat, in epoch milliseconds: the
+ * earliest `exp` of the Skype or chat Bearer token, capped at TOKEN_LIFETIME
+ * after `acquiredAt`. Teams can hand back a token it issued hours earlier, so
+ * the time of capture alone overstates how long it lasts.
+ *
+ * The short-lived search token is deliberately left out; search refreshes it
+ * on demand.
+ */
+export function getSessionExpiry(
+  token: Pick<TeamsToken, "skypeToken" | "chatBearerToken">,
+  acquiredAt?: number,
+): number | undefined {
+  const candidates = [
+    jwtExpiry(token.skypeToken),
+    jwtExpiry(token.chatBearerToken),
+    acquiredAt === undefined ? undefined : acquiredAt + TOKEN_LIFETIME,
+  ].filter((value): value is number => value !== undefined);
+  return candidates.length > 0 ? Math.min(...candidates) : undefined;
 }
 
 function decodeStoredToken(encoded: string): StoredToken | null {
@@ -113,14 +135,21 @@ function decodeStoredToken(encoded: string): StoredToken | null {
 }
 
 function isUsable(storedToken: StoredToken): boolean {
-  if (Date.now() - storedToken.acquiredAt > TOKEN_LIFETIME) {
-    return false;
-  }
-  return !(
-    !storedToken.skypeToken &&
-    storedToken.chatBearerToken &&
-    isJwtExpired(storedToken.chatBearerToken)
-  );
+  const expiresAt = getSessionExpiry(storedToken, storedToken.acquiredAt);
+  return expiresAt === undefined || expiresAt - Date.now() >= JWT_EXPIRY_MARGIN;
+}
+
+function toTeamsToken(storedToken: StoredToken): TeamsToken {
+  return {
+    skypeToken: storedToken.skypeToken,
+    region: storedToken.region,
+    chatBearerToken: storedToken.chatBearerToken,
+    bearerToken: storedToken.bearerToken,
+    substrateToken: storedToken.substrateToken,
+    amsToken: storedToken.amsToken,
+    sharePointToken: storedToken.sharePointToken,
+    sharePointHost: storedToken.sharePointHost,
+  };
 }
 
 /**
@@ -201,18 +230,53 @@ export async function loadToken(email: string): Promise<TeamsToken | null> {
     return null;
   }
 
-  const token: TeamsToken = {
-    skypeToken: newest.skypeToken,
-    region: newest.region,
-    chatBearerToken: newest.chatBearerToken,
-    bearerToken: newest.bearerToken,
-    substrateToken: newest.substrateToken,
-    amsToken: newest.amsToken,
-    sharePointToken: newest.sharePointToken,
-    sharePointHost: newest.sharePointHost,
-  };
+  const token = toTeamsToken(newest);
   registerTokenSecrets(token);
   return token;
+}
+
+/**
+ * The newest cached token for the account, even if it has expired, without
+ * clearing anything. Used to decide when to refresh the sign-in.
+ */
+export async function inspectCachedToken(
+  email: string,
+): Promise<{ token: TeamsToken; acquiredAt: number } | null> {
+  let newest: StoredToken | null = null;
+  for (const store of getTokenStores()) {
+    let encoded: string | null;
+    try {
+      encoded = await store.load(email);
+    } catch {
+      continue;
+    }
+    if (!encoded) continue;
+    registerSecret(encoded);
+    const storedToken = decodeStoredToken(encoded);
+    if (
+      storedToken &&
+      (!newest || storedToken.acquiredAt > newest.acquiredAt)
+    ) {
+      newest = storedToken;
+    }
+  }
+  if (!newest) {
+    return null;
+  }
+  const token = toTeamsToken(newest);
+  registerTokenSecrets(token);
+  return { token, acquiredAt: newest.acquiredAt };
+}
+
+/** When the cached sign-in stops working, or null if nothing is cached. */
+export async function getCachedSessionExpiry(
+  email: string,
+): Promise<number | null> {
+  const cached = await inspectCachedToken(email);
+  if (!cached) {
+    return null;
+  }
+  return getSessionExpiry(cached.token, cached.acquiredAt) ?? null;
 }
 
 async function clearFromStore(

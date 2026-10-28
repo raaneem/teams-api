@@ -24,6 +24,18 @@ const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 
+/** Parse a duration such as `90m`, `24h`, `7d`, or `2w` into milliseconds. */
+export function parseDurationMs(value: string): number {
+  const duration = DURATION_PATTERN.exec(value.trim());
+  if (!duration) {
+    throw new InvalidArgumentError(
+      `Invalid duration "${value}". Use a number with m, h, d, or w, such as 45m or 2h.`,
+    );
+  }
+  const unit = duration[2].toLowerCase() as keyof typeof DURATION_MILLISECONDS;
+  return Number(duration[1]) * DURATION_MILLISECONDS[unit];
+}
+
 /** Normalize a "since" value to an ISO-8601 UTC timestamp. */
 export function parseSinceTimestamp(
   value: string,
@@ -31,13 +43,8 @@ export function parseSinceTimestamp(
 ): string {
   const trimmed = value.trim();
 
-  const duration = DURATION_PATTERN.exec(trimmed);
-  if (duration) {
-    const unit =
-      duration[2].toLowerCase() as keyof typeof DURATION_MILLISECONDS;
-    return new Date(
-      now - Number(duration[1]) * DURATION_MILLISECONDS[unit],
-    ).toISOString();
+  if (DURATION_PATTERN.test(trimmed)) {
+    return new Date(now - parseDurationMs(trimmed)).toISOString();
   }
 
   if (ISO_DATE_PATTERN.test(trimmed)) {

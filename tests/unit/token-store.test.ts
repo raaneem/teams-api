@@ -32,6 +32,9 @@ import {
   saveToken,
   loadToken,
   clearToken,
+  getCachedSessionExpiry,
+  getSessionExpiry,
+  inspectCachedToken,
   resetTokenStoreState,
 } from "../../src/token-store.js";
 
@@ -384,6 +387,67 @@ describe("fallback to the private file cache", () => {
 
     await expect(loadToken(testEmail)).resolves.toEqual(testToken);
     expect(stderrOutput()).toContain("other users can access it");
+  });
+});
+
+describe("session expiry", () => {
+  const hour = 60 * 60 * 1_000;
+
+  function makeJwt(expiresAtMs: number): string {
+    const payload = Buffer.from(
+      JSON.stringify({ exp: Math.floor(expiresAtMs / 1_000) }),
+    ).toString("base64url");
+    return `header.${payload}.signature`;
+  }
+
+  it("uses the Skype token's own expiry when it comes before the cache lifetime", () => {
+    const acquiredAt = Date.now();
+    const skypeExpiry = acquiredAt + 5 * hour;
+
+    expect(
+      getSessionExpiry({ skypeToken: makeJwt(skypeExpiry) }, acquiredAt),
+    ).toBe(skypeExpiry);
+  });
+
+  it("falls back to 23 hours after capture for tokens without an expiry", () => {
+    const acquiredAt = Date.now();
+
+    expect(getSessionExpiry({ skypeToken: "opaque" }, acquiredAt)).toBe(
+      acquiredAt + 23 * hour,
+    );
+    expect(getSessionExpiry({ skypeToken: "opaque" })).toBeUndefined();
+  });
+
+  it("does not use a cached Skype token past its own expiry", async () => {
+    mockStore.load.mockResolvedValueOnce(
+      encodeStoredToken(
+        { skypeToken: makeJwt(Date.now() + 60 * 1_000), region: "apac" },
+        Date.now() - hour,
+      ),
+    );
+
+    await expect(loadToken(testEmail)).resolves.toBeNull();
+    expect(mockStore.clear).toHaveBeenCalledWith(testEmail);
+  });
+
+  it("inspects an expired token without clearing it", async () => {
+    const expiredAt = Date.now() - hour;
+    mockStore.load.mockResolvedValue(
+      encodeStoredToken(
+        { skypeToken: makeJwt(expiredAt), region: "apac" },
+        Date.now() - 20 * hour,
+      ),
+    );
+
+    const inspected = await inspectCachedToken(testEmail);
+
+    expect(inspected?.token.region).toBe("apac");
+    await expect(getCachedSessionExpiry(testEmail)).resolves.toBe(expiredAt);
+    expect(mockStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("reports no expiry when nothing is cached", async () => {
+    await expect(getCachedSessionExpiry(testEmail)).resolves.toBeNull();
   });
 });
 

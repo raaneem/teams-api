@@ -439,26 +439,37 @@ export function createProgram(state: CliState = { exitCode: 0 }): Command {
       "--print-token",
       "Print the raw token bundle to stdout. Treat it as a password. Refused in read-only mode.",
     )
-    .action(async (flags: AuthFlags & { printToken?: boolean }) => {
-      try {
-        applyReadOnlyFlag(flags);
-        if (flags.printToken && isReadOnlyMode()) {
-          throw new ReadOnlyModeError("print tokens");
+    .option(
+      "--refresh",
+      "Refresh the cached sign-in now from the saved browser session (the browser opens briefly)",
+    )
+    .action(
+      async (
+        flags: AuthFlags & { printToken?: boolean; refresh?: boolean },
+      ) => {
+        try {
+          applyReadOnlyFlag(flags);
+          if (flags.printToken && isReadOnlyMode()) {
+            throw new ReadOnlyModeError("print tokens");
+          }
+          const client = await createClient(flags);
+          if (flags.refresh) {
+            await client.refreshTokenNow();
+          }
+          const token = client.getToken();
+          await writeStdout(
+            flags.printToken
+              ? JSON.stringify(token, null, 2)
+              : JSON.stringify(describeTokenStatus(token), null, 2),
+          );
+        } catch (error) {
+          state.exitCode = await reportError(error, {
+            json: false,
+            command: "auth",
+          });
         }
-        const client = await createClient(flags);
-        const token = client.getToken();
-        await writeStdout(
-          flags.printToken
-            ? JSON.stringify(token, null, 2)
-            : JSON.stringify(describeTokenStatus(token), null, 2),
-        );
-      } catch (error) {
-        state.exitCode = await reportError(error, {
-          json: false,
-          command: "auth",
-        });
-      }
-    });
+      },
+    );
 
   // ── logout command (special — clears cached token) ────────────────────
 

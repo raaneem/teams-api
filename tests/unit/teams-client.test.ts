@@ -2819,6 +2819,44 @@ describe("TeamsClient.clearCachedToken", () => {
   });
 });
 
+describe("refreshTokenNow", () => {
+  const cachedToken = { skypeToken: "cached-token", region: "apac" };
+  const freshToken = { skypeToken: "fresh-token", region: "apac" };
+
+  it("keeps the cached token until the fresh one is saved", async () => {
+    mockedTokenStore.loadToken.mockResolvedValue(cachedToken);
+    mockedAuth.acquireTokenViaInteractiveLogin.mockResolvedValue(freshToken);
+    const client = await TeamsClient.connect();
+
+    await client.refreshTokenNow();
+
+    expect(mockedTokenStore.clearToken).not.toHaveBeenCalled();
+    expect(mockedTokenStore.saveToken).toHaveBeenCalledWith(
+      "_default",
+      freshToken,
+    );
+    expect(client.getToken()).toEqual(freshToken);
+  });
+
+  it("shares one browser run between concurrent refreshes", async () => {
+    mockedTokenStore.loadToken.mockResolvedValue(cachedToken);
+    mockedAuth.acquireTokenViaInteractiveLogin.mockResolvedValue(freshToken);
+    const client = await TeamsClient.connect();
+
+    await Promise.all([client.refreshTokenNow(), client.refreshTokenNow()]);
+
+    expect(mockedAuth.acquireTokenViaInteractiveLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses clients that cannot sign in again", async () => {
+    const client = TeamsClient.fromToken("token", "apac");
+
+    await expect(client.refreshTokenNow()).rejects.toThrow(
+      "Cannot refresh token",
+    );
+  });
+});
+
 describe("withTokenRefresh (automatic 401 retry)", () => {
   it("should refresh token and retry on ApiAuthError", async () => {
     const initialToken = {

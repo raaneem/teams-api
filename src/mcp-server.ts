@@ -30,6 +30,9 @@
  *   --host <address>     HTTP listen address (default: 127.0.0.1)
  *   --port <port>        HTTP port (default: 8787)
  *   --allow-writes       Allow write tools over HTTP (TEAMS_READ_ONLY still wins)
+ *   --refresh-margin <d> With --http, refresh the cached sign-in this long before it
+ *                        expires (default: 45m)
+ *   --no-auto-refresh    With --http, do not refresh the sign-in in the background
  *   --print-http-token   Print the HTTP bearer token (created on first use) and exit
  *
  * Usage in VS Code settings (mcp config):
@@ -67,6 +70,16 @@ import { McpAuthManager } from "./mcp-auth.js";
 import type { AuthLogFunction } from "./types.js";
 import { ReadOnlyModeError } from "./read-only.js";
 import { isReadOnlyMode } from "./runtime-flags.js";
+import { parseDurationMs } from "./since.js";
+import {
+  DEFAULT_TOKEN_ACCOUNT,
+  getCachedSessionExpiry,
+  getSessionExpiry,
+} from "./token-store.js";
+import {
+  DEFAULT_REFRESH_MARGIN_MS,
+  startTokenRefresher,
+} from "./token-refresher.js";
 import { InvalidArgumentError } from "./errors.js";
 import {
   DEFAULT_HTTP_HOST,
@@ -295,6 +308,8 @@ export interface ServerArguments {
   port: number;
   allowWrites: boolean;
   printHttpToken: boolean;
+  autoRefresh: boolean;
+  refreshMarginMs: number;
 }
 
 /** Parse `teams-api-mcp` options. Throws `InvalidArgumentError` on bad input. */
@@ -309,6 +324,8 @@ export function parseServerArguments(argv: string[]): ServerArguments {
         port: { type: "string", default: String(DEFAULT_HTTP_PORT) },
         "allow-writes": { type: "boolean", default: false },
         "print-http-token": { type: "boolean", default: false },
+        "refresh-margin": { type: "string" },
+        "no-auto-refresh": { type: "boolean", default: false },
       },
       strict: true,
       allowPositionals: false,
@@ -327,6 +344,11 @@ export function parseServerArguments(argv: string[]): ServerArguments {
     port,
     allowWrites: values["allow-writes"],
     printHttpToken: values["print-http-token"],
+    autoRefresh: !values["no-auto-refresh"],
+    refreshMarginMs:
+      values["refresh-margin"] === undefined
+        ? DEFAULT_REFRESH_MARGIN_MS
+        : parseDurationMs(values["refresh-margin"]),
   };
 }
 
@@ -358,6 +380,29 @@ async function serveHttp(options: ServerArguments): Promise<void> {
     `teams-api MCP server listening on http://${options.host}:${options.port}${MCP_HTTP_PATH} ` +
       `(${readOnly ? "read-only" : "read and write"}; bearer token required)`,
   );
+
+  if (options.autoRefresh) {
+    startTokenRefresher({
+      marginMs: options.refreshMarginMs,
+      getExpiry: () => getCachedSessionExpiry(DEFAULT_TOKEN_ACCOUNT),
+      refresh: async () => {
+        const client = await authManager.getClient();
+        // Signing in just now already produced a fresh token.
+        const expiresAt = getSessionExpiry(client.getToken());
+        if (
+          expiresAt !== undefined &&
+          expiresAt - Date.now() > options.refreshMarginMs
+        ) {
+          return;
+        }
+        await client.refreshTokenNow();
+      },
+      log: logToStderr,
+    });
+    logToStderr(
+      `Keeping the Teams sign-in fresh: refreshing ${Math.round(options.refreshMarginMs / 60_000)} minutes before it expires.`,
+    );
+  }
 }
 
 async function main() {

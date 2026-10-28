@@ -294,6 +294,7 @@ export class TeamsClient {
   private cachedDisplayName: string | null = null;
   private cachedUserPrincipalName: string | null = null;
   private userEmail: string | null = null;
+  private refreshInFlight: Promise<void> | null = null;
 
   private constructor(token: TeamsToken) {
     this.token = token;
@@ -417,7 +418,7 @@ export class TeamsClient {
           await saveToken(cacheKey, token);
         }
         const client = new TeamsClient(token);
-        client.smartLoginOptions = options ?? null;
+        client.smartLoginOptions = options ?? {};
         client.userEmail = options?.email ?? null;
         return client;
       }
@@ -442,7 +443,7 @@ export class TeamsClient {
     }
 
     const client = new TeamsClient(token);
-    client.smartLoginOptions = options ?? null;
+    client.smartLoginOptions = options ?? {};
     if (email) {
       client.userEmail = email;
     }
@@ -2099,15 +2100,41 @@ export class TeamsClient {
   }
 
   /**
+   * Refresh the tokens now from the saved browser session (the browser opens
+   * briefly) and update the cache. Unlike the automatic refresh after a 401,
+   * the cached token stays in place until the new one is saved, so a failed
+   * refresh leaves a still-valid sign-in untouched.
+   *
+   * Requires a client created by `connect()` or `create()`.
+   */
+  async refreshTokenNow(): Promise<void> {
+    await this.refreshToken({ keepCachedToken: true });
+  }
+
+  /**
    * Re-acquire the token and update the cached version.
    *
    * Called automatically by `withTokenRefresh` on 401 errors.
-   * Supports both auto-login and smart login paths.
+   * Supports both auto-login and smart login paths. Concurrent calls share
+   * one browser run.
    */
-  private async refreshToken(): Promise<void> {
+  private refreshToken(
+    options: { keepCachedToken?: boolean } = {},
+  ): Promise<void> {
+    this.refreshInFlight ??= this.performTokenRefresh(options).finally(() => {
+      this.refreshInFlight = null;
+    });
+    return this.refreshInFlight;
+  }
+
+  private async performTokenRefresh(options: {
+    keepCachedToken?: boolean;
+  }): Promise<void> {
     if (this.smartLoginOptions) {
       const cacheKey = this.smartLoginOptions.email ?? DEFAULT_ACCOUNT;
-      await clearToken(cacheKey);
+      if (!options.keepCachedToken) {
+        await clearToken(cacheKey);
+      }
       const freshToken = await acquireTokenViaSmartLogin(
         this.smartLoginOptions,
       );
@@ -2131,7 +2158,9 @@ export class TeamsClient {
       );
     }
 
-    await clearToken(this.autoLoginOptions.email);
+    if (!options.keepCachedToken) {
+      await clearToken(this.autoLoginOptions.email);
+    }
     const freshToken = await acquireTokenViaAutoLogin(this.autoLoginOptions);
     await saveToken(this.autoLoginOptions.email, freshToken);
     this.token = freshToken;
